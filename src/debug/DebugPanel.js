@@ -51,3 +51,13 @@ export function layoutDebugEntries(layout, snapshot) {
     ['board', `${board.cols} x ${board.rows}`],
   ];
 }
+
+/** Panel lines for performance: FPS, draw calls, active effect instances and GPU memory (renderer.info.memory). */
+export function statsDebugEntries(fps, stats, confetti) {
+  return [
+    ['fps', fps.toFixed(0)],
+    ['draw calls', `${stats.calls}${confetti.calls ? ` + ${confetti.calls} confetti` : ''}`],
+    ['particles', `${stats.particles} (projectiles ${stats.projectiles}, blocks ${stats.blocks}, confetti ${confetti.confetti})`],
+    ['memory', `geometries ${stats.geometries}, textures ${stats.textures}`],
+  ];
+}

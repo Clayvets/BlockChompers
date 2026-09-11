@@ -2,11 +2,22 @@ import * as THREE from 'three';
 import { PrimitiveFactory } from './PrimitiveFactory.js';
 import { Events } from '../core/Events.js';
 import { UnitState } from '../core/Unit.js';
-import { countAvailableSlots } from '../core/InventoryManager.js';
-import { ease } from '../core/easing.js';
+import { ease } from './anim/easing.js';
+import { VfxFactory } from './vfx/VfxFactory.js';
+import { VfxManager } from './vfx/VfxManager.js';
 import { trackDrawPosition, trackFromSnapshot } from './trackPlacement.js';
-import { HEADING, launchPath, flightProgress, flightPose, entryQueueBacks, returnPose } from './launchPlacement.js';
+import { HEADING, launchPath, flightProgress, flightPose, entryQueueBacks, returnPose, newPose } from './launchPlacement.js';
 import { computeLayout, fitView, boardPoint, slotPoint, reservePoint } from './layout/computeLayout.js';
+
+const WHITE = new THREE.Color(1, 1, 1);
+const USED_STATES = new Set([UnitState.LAUNCHING, UnitState.RUNNING, UnitState.EATING, UnitState.RETURNED]);
+/** Numeric key of a grid cell (no string per lookup). */
+const cellKey = (row, col) => row * 1024 + col;
+/** Reserve shift order within a column (a module function, so sorting creates no closure per frame). */
+const byTarget = (a, b) => a.target - b.target;
+const clearList = (list) => {
+  list.length = 0;
+};
 
 /**
  * The Three.js bridge. Reads snapshots, owns the scene graph, never mutates game state.
@@ -14,7 +25,11 @@ import { computeLayout, fitView, boardPoint, slotPoint, reservePoint } from './l
  *   sync(snapshot)  -- structure: static layer (track guide, slots, reserve tiles, camera) rebuilt when the
  *                      level's shape changes, blocks diffed on grid.version, slot tints on inventory.version,
  *                      units re-posed every frame (flight curve, entry queue, return glide, reserve shift, turning)
- *   bindEvents(bus) -- effects only (end-of-level background tint)
+ *   bindEvents(bus) -- effects only: end-of-level tint, and the VfxManager (projectiles, block hits, sparks)
+ *
+ * Juice runs on a presentation clock (sync's dtMs: frozen while paused, scaled by debug.timeScale): the muzzle pop,
+ * the capacity number swap, the death pop and the "N/5" counter punch live here because they animate meshes this class
+ * owns; the VfxManager borrows blocks and unit positions through the host methods (takeBlockMesh, unitTip, ...).
  *
  * Layout: a fixed portrait design (Config.render.layout) in design units, which are world units on the x/z plane.
  * computeLayout() (pure) gives every rect; the camera shows the whole design and never refits on a level change.
@@ -24,7 +39,7 @@ import { computeLayout, fitView, boardPoint, slotPoint, reservePoint } from './l
  * exists along the track (Config.track.launchSpacing).
  */
 export class Renderer {
-  /** @type {Map<string, THREE.Mesh>} key 'row,col' */
+  /** @type {Map<number, THREE.Mesh>} key cellKey(row, col); the VfxManager takes a block's mesh when it is eaten */
   #blockMeshes = new Map();
   /** @type {Map<string, THREE.Group>} key unit id; group.userData.label is the capacity sprite */
   #unitMeshes = new Map();
@@ -60,9 +75,26 @@ export class Renderer {
   #entry = null;
   /** snapshot.launchSteps: whole steps of a launch flight. */
   #launchSteps = 0;
-  /** Text currently on the "N/5" sprite. */
-  #counterText = null;
-  #animClock = null;
+  /** Presentation clock (ms): advanced by sync's dtMs, frozen while paused. */
+  #clock = 0;
+  /** N shown on the "N/5" sprite, and when it last changed / hit 0 (counter punch and flash). */
+  #counterFree = null;
+  #counterPunchAt = -Infinity;
+  #counterFlashAt = -Infinity;
+  #counterBase = { x: 1, y: 1 };
+  #labelFlash = null;
+  #counterFlash = null;
+  /** Reused every frame, so the unit loop allocates no arrays, sets or maps. */
+  #alive = new Set();
+  #pickList = [];
+  #backs = new Map();
+  #backsScratch = [];
+  #liveCells = new Set();
+  #trackPoint = { x: 0, y: 0, facing: 'N' };
+  #slotPoint = { x: 0, y: 0 };
+  #resColumns = new Map();
+  #resSeen = new Set();
+  #resNow = 0;
   #size = { width: 1, height: 1 };
   /** Screen pixels covered by DOM chrome (HUD bar); fitCamera keeps the board out of them. */
   #insets = { top: 0, bottom: 0 };
@@ -93,6 +125,17 @@ export class Renderer {
     this.scene.add(this.#levelRoot);
     this.initLights();
     this.initOrthographicCamera();
+    const { vfx } = this.config.render;
+    this.#labelFlash = new THREE.Color(vfx.label.flashColor);
+    this.#counterFlash = new THREE.Color(vfx.counter.flashColor);
+    this.vfxFactory = new VfxFactory(this.config);
+    this.vfx = new VfxManager({ config: this.config, factory: this.vfxFactory, host: this });
+    this.vfx.attach(this.scene);
+  }
+
+  /** Effects "reduced": fewer particles (settings toggle or prefers-reduced-motion). */
+  setEffectsReduced(reduced) {
+    if (this.vfx) this.vfx.setReduced(reduced);
   }
 
   /**
@@ -168,27 +211,35 @@ export class Renderer {
     const empty = this.config.grid.emptyValue;
     const { cellSize } = this.#layout;
     const half = (this.config.render.blockHeight * cellSize) / 2;
-    const live = new Set();
-    gridState.cells.forEach((row, r) => row.forEach((value, c) => {
-      if (value === empty) return;
-      const key = `${r},${c}`;
-      live.add(key);
-      const existing = this.#blockMeshes.get(key);
-      if (existing && existing.userData.color === value) return;
-      if (existing) this.#levelRoot.remove(existing);
-      const mesh = this.factory.block(value, r, c);
-      mesh.userData.color = value;
-      mesh.scale.setScalar(cellSize);
-      this.boardToWorld(c + 0.5, r + 0.5, half, mesh.position);
-      this.#levelRoot.add(mesh);
-      this.#blockMeshes.set(key, mesh);
-    }));
-    for (const [key, mesh] of this.#blockMeshes) {
-      if (live.has(key)) continue;
-      this.#levelRoot.remove(mesh);
-      this.#blockMeshes.delete(key);
+    const live = this.#liveCells;
+    live.clear();
+    const { cells } = gridState;
+    for (let r = 0; r < cells.length; r += 1) {
+      const row = cells[r];
+      for (let c = 0; c < row.length; c += 1) {
+        const value = row[c];
+        if (value === empty) continue;
+        const key = cellKey(r, c);
+        live.add(key);
+        const existing = this.#blockMeshes.get(key);
+        if (existing && existing.userData.color === value) continue;
+        if (existing) this.#levelRoot.remove(existing);
+        const mesh = this.factory.block(value, r, c);
+        mesh.userData.color = value;
+        mesh.scale.setScalar(cellSize);
+        this.boardToWorld(c + 0.5, r + 0.5, half, mesh.position);
+        this.#levelRoot.add(mesh);
+        this.#blockMeshes.set(key, mesh);
+      }
     }
+    this.#blockMeshes.forEach(this.#pruneBlock);
   }
+
+  #pruneBlock = (mesh, key) => {
+    if (this.#liveCells.has(key)) return;
+    this.#levelRoot.remove(mesh);
+    this.#blockMeshes.delete(key);
+  };
 
   /** Guide tiles on every ring cell (render.track.showGuide); the entry corner is tinted. */
   buildTrack(trackState) {
@@ -225,19 +276,42 @@ export class Renderer {
     }
   }
 
-  /** "N/total" every frame: N = activeSlots - (units moving + units parked); moving units hold no slot. */
-  #updateSlotCounter({ units, slots }) {
-    if (!this.#slotCounter) return;
-    const { free, total } = countAvailableSlots(units, slots.length);
-    const text = `${free}/${total}`;
-    if (text === this.#counterText) return;
-    this.#counterText = text;
-    this.factory.setText(this.#slotCounter, text);
+  /**
+   * "N/total" every frame: N = activeSlots - (units moving + units parked); moving units hold no slot. The text is only
+   * redrawn when N changes; then the sprite punches, and it flashes when N reaches 0.
+   */
+  #updateSlotCounter({ units, slots }, now) {
+    const counter = this.#slotCounter;
+    if (!counter) return;
+    let used = 0;
+    for (let i = 0; i < units.length; i += 1) if (USED_STATES.has(units[i].state)) used += 1;
+    const total = slots.length;
+    const free = Math.max(0, total - used);
+    if (free !== this.#counterFree) {
+      if (this.#counterFree !== null) {
+        this.#counterPunchAt = now;
+        if (free === 0) this.#counterFlashAt = now;
+      }
+      this.#counterFree = free;
+      this.factory.setText(counter, `${free}/${total}`);
+    }
+    const c = this.config.render.vfx.counter;
+    const tp = now - this.#counterPunchAt;
+    const k = tp >= 0 && tp < c.punchMs ? 1 + c.punch * ease('punch', tp / c.punchMs) : 1;
+    counter.scale.set(this.#counterBase.x * k, this.#counterBase.y * k, 1);
+    const tf = now - this.#counterFlashAt;
+    if (tf >= 0 && tf < c.flashMs) counter.material.color.copy(this.#counterFlash).lerp(WHITE, ease('easeInQuad', tf / c.flashMs));
+    else counter.material.color.copy(WHITE);
   }
 
-  /** Per-frame sync from a snapshot. Safe to call before a level is loaded. */
-  sync(snapshot) {
+  /**
+   * Per-frame sync from a snapshot. Safe to call before a level is loaded. dtMs is the frame's presentation time
+   * (main.js: real time x debug.timeScale); nothing animates while the game is paused.
+   */
+  sync(snapshot, dtMs = 1000 / 60) {
     if (!this.scene || !snapshot || !snapshot.track) return;
+    const dt = snapshot.paused ? 0 : dtMs;
+    this.#clock += dt;
     const signature = this.#signatureOf(snapshot);
     if (signature !== this.#signature) this.#rebuildStatic(snapshot, signature);
     this.#alpha = snapshot.stepAlpha || 0;
@@ -250,8 +324,9 @@ export class Renderer {
       this.buildInventory(snapshot);
       this.#inventoryVersion = snapshot.inventory.version;
     }
-    this.#syncUnits(snapshot);
-    this.#updateSlotCounter(snapshot);
+    this.#syncUnits(snapshot, dt);
+    this.#updateSlotCounter(snapshot, this.#clock);
+    if (this.vfx) this.vfx.update(dt);
   }
 
   #signatureOf({ levelId, grid, track, slots, inventory }) {
@@ -294,6 +369,7 @@ export class Renderer {
       this.#slotMeshes.push(mesh);
     });
     this.#slotCounter = this.factory.text('', { ...this.config.render.slotCounter, height: layout.counter.height });
+    this.#counterBase = { x: this.#slotCounter.scale.x, y: this.#slotCounter.scale.y };
     this.designToWorld(layout.counter.x, layout.counter.y, this.config.render.label.yOffset, this.#slotCounter.position);
     this.#levelRoot.add(this.#slotCounter);
     // The whole reserve grid, on every level (plus any rows a level needs beyond it).
@@ -320,21 +396,32 @@ export class Renderer {
     this.#levelRoot.add(group);
   }
 
-  #syncUnits(snapshot) {
+  #syncUnits(snapshot, dt) {
     const { units, slots } = snapshot;
-    const { unitHeight, label } = this.config.render;
-    const now = performance.now();
-    const dt = this.#animClock === null ? 0 : now - this.#animClock;
-    this.#animClock = now;
+    const { unitHeight, label, hopHeight, vfx } = this.config.render;
+    const now = this.#clock;
     this.#animateReserve(units, now);
-    const backs = entryQueueBacks(units, this.config.track.launchSpacing, this.#alpha);
+    const backs = entryQueueBacks(units, this.config.track.launchSpacing, this.#alpha, this.#backs, this.#backsScratch);
     const frontOnly = this.config.inventory.frontOnlyPick;
-    const pickables = slots.filter((s) => s.status === 'blocked').map((s) => this.#slotMeshes[s.index]).filter(Boolean);
-    const alive = new Set();
-    for (const unit of units) {
-      if (unit.state === UnitState.DEAD) continue;
-      alive.add(unit.id);
+    const pickables = this.#pickList;
+    pickables.length = 0;
+    for (let i = 0; i < slots.length; i += 1) if (slots[i].status === 'blocked' && this.#slotMeshes[slots[i].index]) pickables.push(this.#slotMeshes[slots[i].index]);
+    const alive = this.#alive;
+    alive.clear();
+    for (let u = 0; u < units.length; u += 1) {
+      const unit = units[u];
       let group = this.#unitMeshes.get(unit.id);
+      if (unit.state === UnitState.DEAD) {
+        // Keep a unit that just died for its death pop, where it was last drawn; then it is removed below.
+        const juice = group && group.userData.juice;
+        if (!juice || juice.deathAt < 0 || now - juice.deathAt >= vfx.death.ms) continue;
+        alive.add(unit.id);
+        group.userData.pickAs = null;
+        this.#applyLabel(group, unit, now);
+        this.#applyJuice(group, now, true);
+        continue;
+      }
+      alive.add(unit.id);
       if (group && group.userData.color !== unit.color) {
         this.#removeUnit(unit.id, group); // same id, different level: rebuild in the new colour
         group = undefined;
@@ -343,24 +430,172 @@ export class Renderer {
         group = this.factory.unit(unit.color, unit.id);
         group.userData.color = unit.color;
         const sprite = this.factory.label(String(unit.capacity));
+        const spare = this.factory.label('');
         sprite.position.y = label.yOffset;
-        group.add(sprite);
-        group.userData.label = sprite;
+        spare.position.y = label.yOffset;
+        spare.visible = false;
+        group.add(sprite, spare);
+        Object.assign(group.userData, {
+          label: sprite, labelSpare: spare, labelValue: unit.capacity, labelBase: sprite.scale.y,
+          juice: { fireAt: -Infinity, deathAt: -1, swapAt: -Infinity },
+        });
         this.#levelRoot.add(group);
         this.#unitMeshes.set(unit.id, group);
       }
-      this.factory.setLabel(group.userData.label, String(unit.capacity));
+      group.userData.juice.deathAt = -1;
+      this.#applyLabel(group, unit, now);
       group.userData.pickAs = this.#pickTarget(unit, frontOnly);
       if (group.userData.pickAs) pickables.push(group);
-      const pose = this.#unitPose(unit, now, backs);
-      this.designToWorld(pose.x, pose.y, unitHeight / 2 + (pose.air || 0) * this.config.render.hopHeight, group.position);
+      if (!group.userData.pose) group.userData.pose = newPose();
+      const pose = this.#unitPose(unit, now, backs, group.userData.pose);
+      this.designToWorld(pose.x, pose.y, unitHeight / 2 + (pose.air || 0) * hopHeight, group.position);
       this.#turn(group, pose.dir, dt);
+      this.#applyJuice(group, now, false);
     }
-    for (const [id, group] of this.#unitMeshes) {
-      if (!alive.has(id)) this.#removeUnit(id, group);
-    }
-    for (const id of this.#motion.keys()) if (!alive.has(id)) this.#motion.delete(id);
+    this.#unitMeshes.forEach(this.#pruneUnit);
+    this.#motion.forEach(this.#pruneMotion);
     this.#pickables = pickables;
+  }
+
+  // Bound once: Map.forEach with these allocates nothing per frame.
+  #pruneUnit = (group, id) => {
+    if (!this.#alive.has(id)) this.#removeUnit(id, group);
+  };
+
+  #pruneMotion = (_, id) => {
+    if (!this.#alive.has(id)) this.#motion.delete(id);
+  };
+
+  // ---- VfxManager host: what the effects may borrow (never game state) ----
+
+  /** Hand the block mesh at (row, col) over to the effects; the grid diff will no longer see or remove it. */
+  takeBlockMesh(row, col) {
+    const key = cellKey(row, col);
+    const mesh = this.#blockMeshes.get(key);
+    if (!mesh) return null;
+    this.#blockMeshes.delete(key);
+    return mesh;
+  }
+
+  /** World centre of a grid cell, written into `out` (a Vector3). */
+  cellWorld(row, col, out) {
+    const { boardOrigin, cellSize } = this.#layout;
+    return out.set(boardOrigin.x + (col + 0.5) * cellSize, 0, boardOrigin.y + (row + 0.5) * cellSize);
+  }
+
+  /** World position of a unit's tip (the cone apex), written into `out`; false when the unit has no mesh. */
+  unitTip(unitId, out) {
+    const group = this.#unitMeshes.get(unitId);
+    if (!group) return false;
+    const half = this.config.render.layout.unitSize / 2;
+    const h = group.rotation.y;
+    out.set(group.position.x + Math.cos(h) * half, group.position.y, group.position.z - Math.sin(h) * half);
+    return true;
+  }
+
+  /** The level's colour for a colour id, written into `out` (a Color). */
+  paletteColor(colorId, out) {
+    const hex = this.#style ? this.#style.palette[colorId] : undefined;
+    return out.setHex(hex === undefined ? 0xffffff : hex);
+  }
+
+  cellSize() {
+    return this.#layout ? this.#layout.cellSize : 1;
+  }
+
+  /** The unit fired: start its muzzle pop. */
+  unitFired(unitId) {
+    const group = this.#unitMeshes.get(unitId);
+    if (group) group.userData.juice.fireAt = this.#clock;
+  }
+
+  /** The unit died: start its death pop; its position goes into `out`. @returns {number} its colour id (0 if unknown) */
+  unitDied(unitId, out) {
+    const group = this.#unitMeshes.get(unitId);
+    if (!group) return 0;
+    group.userData.juice.deathAt = this.#clock;
+    out.copy(group.position);
+    return group.userData.color;
+  }
+
+  /** Debug numbers: draw calls and memory of the last frame, and active effect instances. */
+  getStats() {
+    const info = this.gl ? this.gl.info : null;
+    const vfx = this.vfx ? this.vfx.stats() : { projectiles: 0, particles: 0, blocks: 0 };
+    return {
+      calls: info ? info.render.calls : 0,
+      triangles: info ? info.render.triangles : 0,
+      geometries: info ? info.memory.geometries : 0,
+      textures: info ? info.memory.textures : 0,
+      projectiles: vfx.projectiles,
+      particles: vfx.particles,
+      blocks: vfx.blocks,
+    };
+  }
+
+  /**
+   * Capacity label. Redrawn only when the number changes: then the old number (now on the spare sprite) fades and
+   * shrinks away while the new one pops in with an overshoot and a quick colour flash.
+   */
+  #applyLabel(group, unit, now) {
+    const ud = group.userData;
+    const L = this.config.render.vfx.label;
+    if (unit.capacity !== ud.labelValue) {
+      const incoming = ud.labelSpare;
+      ud.labelSpare = ud.label;
+      ud.label = incoming;
+      ud.labelValue = unit.capacity;
+      this.factory.setLabel(incoming, String(unit.capacity));
+      incoming.visible = true;
+      ud.juice.swapAt = now;
+    }
+    const t = now - ud.juice.swapAt;
+    const base = ud.labelBase;
+    const out = ud.labelSpare;
+    if (t < L.outMs) {
+      const e = ease('easeOutQuad', t / L.outMs);
+      const k = base * (1 + (L.outScale - 1) * e);
+      out.visible = true;
+      out.material.opacity = 1 - e;
+      out.scale.set(k, k, 1);
+    } else if (out.visible) {
+      out.visible = false;
+    }
+    const k = t < L.inMs ? base * (L.inFrom + (1 - L.inFrom) * ease('easeOutBack', t / L.inMs)) : base;
+    ud.label.scale.set(k, k, 1);
+    ud.label.material.opacity = 1;
+    if (t < L.flashMs) ud.label.material.color.copy(this.#labelFlash).lerp(WHITE, ease('easeInQuad', t / L.flashMs));
+    else ud.label.material.color.copy(WHITE);
+  }
+
+  /** Muzzle pop when the unit fires; squash then shrink when it has died (its local x axis is the heading). */
+  #applyJuice(group, now, dead) {
+    const { muzzle, death } = this.config.render.vfx;
+    const juice = group.userData.juice;
+    let sx = 1;
+    let sy = 1;
+    let sz = 1;
+    const tf = now - juice.fireAt;
+    if (tf >= 0 && tf < muzzle.ms) {
+      const k = 1 + muzzle.punch * ease('punch', tf / muzzle.ms);
+      sx = k;
+      sy = k;
+      sz = k;
+    }
+    if (dead) {
+      const p = (now - juice.deathAt) / death.ms;
+      if (p < death.squashAt) {
+        const e = ease('easeOutQuad', p / death.squashAt);
+        sx *= 1 + (death.squash - 1) * e;
+        sz *= 1 + (death.stretch - 1) * e;
+      } else {
+        const f = Math.max(0, 1 - ease('easeInBack', (p - death.squashAt) / (1 - death.squashAt)));
+        sx = death.squash * f;
+        sy = f;
+        sz = death.stretch * f;
+      }
+    }
+    group.scale.set(sx, sy, sz);
   }
 
   /** Raycast target for a unit: front reserve units launch, parked units relaunch from their slot, others none. */
@@ -393,12 +628,14 @@ export class Renderer {
    * drawn closer than one row to the unit ahead, so meshes never overlap. A unit whose row moved back (restart) snaps.
    */
   #animateReserve(units, now) {
-    const { reserveShiftMs, reserveShiftStaggerMs, motionEasing } = this.config.render;
-    const columns = new Map();
-    const inReserve = new Set();
-    for (const unit of units) {
+    const columns = this.#resColumns;
+    const seen = this.#resSeen;
+    columns.forEach(clearList);
+    seen.clear();
+    for (let i = 0; i < units.length; i += 1) {
+      const unit = units[i];
       if (unit.state !== UnitState.RESERVE) continue;
-      inReserve.add(unit.id);
+      seen.add(unit.id);
       const { col, row } = unit.reservePos;
       let entry = this.#reserveAnim.get(unit.id);
       if (!entry || entry.col !== col || row > entry.target) {
@@ -409,31 +646,45 @@ export class Renderer {
         entry.target = row;
         entry.startAt = null;
       }
-      if (!columns.has(col)) columns.set(col, []);
-      columns.get(col).push(entry);
-    }
-    for (const [id, entry] of this.#reserveAnim) {
-      if (inReserve.has(id)) continue;
-      this.#departures.set(entry.col, now);
-      this.#reserveAnim.delete(id);
-    }
-    for (const [col, column] of columns) {
-      column.sort((a, b) => a.target - b.target);
-      let leaderStart = this.#departures.has(col) ? this.#departures.get(col) : -Infinity;
-      let leaderY = -Infinity;
-      for (const entry of column) {
-        if (entry.startAt === null) entry.startAt = Math.max(now, leaderStart + reserveShiftStaggerMs);
-        if (entry.from > entry.target) {
-          const p = (now - entry.startAt) / (reserveShiftMs * (entry.from - entry.target));
-          entry.y = entry.from + (entry.target - entry.from) * ease(motionEasing, p);
-          if (p >= 1) entry.from = entry.target;
-          leaderStart = entry.startAt;
-        }
-        entry.y = Math.max(entry.y, leaderY + 1);
-        leaderY = entry.y;
+      let list = columns.get(col);
+      if (!list) {
+        list = [];
+        columns.set(col, list);
       }
+      list.push(entry);
     }
+    this.#resNow = now;
+    this.#reserveAnim.forEach(this.#noteDeparture);
+    columns.forEach(this.#shiftColumn);
   }
+
+  /** A unit left the reserve: its column's shift starts a stagger after this moment. */
+  #noteDeparture = (entry, id) => {
+    if (this.#resSeen.has(id)) return;
+    this.#departures.set(entry.col, this.#resNow);
+    this.#reserveAnim.delete(id);
+  };
+
+  /** One column, front to back: each unit starts a stagger after the one ahead and never closes in beyond a row. */
+  #shiftColumn = (column, col) => {
+    const { reserveShiftMs, reserveShiftStaggerMs, motionEasing } = this.config.render;
+    const now = this.#resNow;
+    column.sort(byTarget);
+    let leaderStart = this.#departures.has(col) ? this.#departures.get(col) : -Infinity;
+    let leaderY = -Infinity;
+    for (let i = 0; i < column.length; i += 1) {
+      const entry = column[i];
+      if (entry.startAt === null) entry.startAt = Math.max(now, leaderStart + reserveShiftStaggerMs);
+      if (entry.from > entry.target) {
+        const p = (now - entry.startAt) / (reserveShiftMs * (entry.from - entry.target));
+        entry.y = entry.from + (entry.target - entry.from) * ease(motionEasing, p);
+        if (p >= 1) entry.from = entry.target;
+        leaderStart = entry.startAt;
+      }
+      entry.y = Math.max(entry.y, leaderY + 1);
+      leaderY = entry.y;
+    }
+  };
 
   /**
    * Where to draw a unit (cell units) and which way it heads:
@@ -444,47 +695,61 @@ export class Renderer {
    *   RETURNED         -- gliding from where it left the track into its slot (render.returnToSlotMs), then parked
    *   RESERVE          -- its reserve cell, with the eased column shift
    */
-  #unitPose(unit, now, backs) {
+  #unitPose(unit, now, backs, out) {
     const motion = this.#motionFor(unit, now);
     const { motionEasing, launchLift, launchCurve, returnToSlotMs } = this.config.render;
     const layout = this.#layout;
-    let pose;
+    const { boardOrigin, cellSize } = layout;
     if (unit.pose) {
-      const p = trackDrawPosition(unit, this.#track, this.#alpha);
-      pose = { ...boardPoint(layout, p.x, p.y), dir: HEADING[p.facing] };
+      const p = trackDrawPosition(unit, this.#track, this.#alpha, this.#trackPoint);
+      out.x = boardOrigin.x + p.x * cellSize;
+      out.y = boardOrigin.y + p.y * cellSize;
+      out.dir.dx = HEADING[p.facing].dx;
+      out.dir.dy = HEADING[p.facing].dy;
+      out.air = 0;
     } else if (unit.state === UnitState.LAUNCHING) {
       if (!motion.path) motion.path = launchPath(motion.from, this.#entry.point, this.#entry.dir, { lift: launchLift, curve: launchCurve });
       // Queue gaps are track distances (cells): on the board they are cellSize long.
-      const back = (backs.get(unit.id) || 0) * layout.cellSize;
-      pose = flightPose(motion.path, flightProgress(unit, this.#launchSteps, this.#alpha), motionEasing, back);
+      const back = (backs.get(unit.id) || 0) * cellSize;
+      flightPose(motion.path, flightProgress(unit, this.#launchSteps, this.#alpha), motionEasing, back, out);
     } else if (unit.state === UnitState.RETURNED && unit.slotIndex !== null) {
       const progress = returnToSlotMs > 0 ? (now - motion.since) / returnToSlotMs : 1;
-      pose = returnPose(motion.from, slotPoint(layout, unit.slotIndex), progress, motionEasing);
+      const slot = layout.slots[unit.slotIndex];
+      this.#slotPoint.x = slot.x + slot.w / 2;
+      this.#slotPoint.y = slot.y + slot.h / 2;
+      returnPose(motion.from, this.#slotPoint, progress, motionEasing, out);
     } else {
       const anim = this.#reserveAnim.get(unit.id);
       const row = anim ? anim.y : unit.reservePos.row;
-      pose = { ...reservePoint(layout, unit.reservePos.col, row), dir: HEADING.N };
+      const { origin, pitch } = layout.reserve;
+      out.x = origin.x + unit.reservePos.col * pitch;
+      out.y = origin.y + row * pitch;
+      out.dir.dx = HEADING.N.dx;
+      out.dir.dy = HEADING.N.dy;
+      out.air = 0;
     }
-    motion.last = { x: pose.x, y: pose.y };
-    return pose;
+    motion.last.x = out.x;
+    motion.last.y = out.y;
+    motion.seen = true;
+    return out;
   }
 
   /** Per-unit presentation memory: notices a new launch or a return and remembers where it started from. */
   #motionFor(unit, now) {
     let motion = this.#motion.get(unit.id);
     if (!motion) {
-      motion = { state: unit.state, launchSeq: unit.launchSeq, from: null, since: now, path: null, last: null };
+      motion = { state: unit.state, launchSeq: unit.launchSeq, from: null, since: now, path: null, last: { x: 0, y: 0 }, seen: false };
       if (unit.state === UnitState.LAUNCHING) motion.from = this.#originPoint(unit); // first sight mid-flight
       this.#motion.set(unit.id, motion);
       return motion;
     }
     const newLaunch = unit.state === UnitState.LAUNCHING && (motion.state !== UnitState.LAUNCHING || motion.launchSeq !== unit.launchSeq);
     if (newLaunch) {
-      motion.from = motion.last || this.#originPoint(unit);
+      motion.from = motion.seen ? { x: motion.last.x, y: motion.last.y } : this.#originPoint(unit);
       motion.path = null;
       motion.since = now;
     } else if (unit.state === UnitState.RETURNED && motion.state !== UnitState.RETURNED) {
-      motion.from = motion.last;
+      motion.from = motion.seen ? { x: motion.last.x, y: motion.last.y } : null;
       motion.since = now;
     }
     motion.state = unit.state;
@@ -502,6 +767,7 @@ export class Renderer {
 
   #removeUnit(id, group) {
     this.factory.disposeLabel(group.userData.label);
+    this.factory.disposeLabel(group.userData.labelSpare);
     this.#levelRoot.remove(group);
     this.#unitMeshes.delete(id);
     this.#pickables = this.#pickables.filter((object) => object !== group);
@@ -521,6 +787,7 @@ export class Renderer {
       eventBus.on(Events.LEVEL_LOST, tint(endTint.lost)),
       eventBus.on(Events.LEVEL_LOADED, () => tint(this.#style ? this.#style.background : background)()),
     ];
+    if (this.vfx) offs.push(this.vfx.bindEvents(eventBus));
     return () => offs.forEach((off) => off());
   }
 
@@ -567,7 +834,10 @@ export class Renderer {
 
   /** Dispose level meshes (blocks, units, slots, tiles) but keep gl/camera for the next level. */
   clear() {
-    for (const group of this.#unitMeshes.values()) this.factory.disposeLabel(group.userData.label);
+    for (const group of this.#unitMeshes.values()) {
+      this.factory.disposeLabel(group.userData.label);
+      this.factory.disposeLabel(group.userData.labelSpare);
+    }
     if (this.#slotCounter) this.factory.disposeLabel(this.#slotCounter);
     this.#slotCounter = null;
     if (this.#debugGroup) this.#debugGroup.children.forEach((line) => line.geometry.dispose());
@@ -580,9 +850,10 @@ export class Renderer {
     this.#reserveAnim.clear();
     this.#departures.clear();
     this.#motion.clear();
-    this.#counterText = null;
+    this.#counterFree = null;
+    this.#counterPunchAt = -Infinity;
+    this.#counterFlashAt = -Infinity;
     this.#entry = null;
-    this.#animClock = null;
     this.#trackGroup = null;
     this.#layout = null;
     this.#signature = null;
@@ -593,6 +864,8 @@ export class Renderer {
   /** Full teardown. */
   dispose() {
     this.clear();
+    if (this.vfx) this.vfx.dispose();
+    if (this.vfxFactory) this.vfxFactory.dispose();
     this.factory.dispose();
     if (this.gl) this.gl.dispose();
     this.scene = null;

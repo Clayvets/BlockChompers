@@ -213,6 +213,42 @@ export const Config = Object.freeze({
     returnToSlotMs: 280,
     /** How fast a unit turns to face its direction of travel, per second (exponential; higher = snappier). */
     rotationDamping: 18,
+    /** Flight time (ms) of a projectile from the unit's tip to the block it ate; the block reacts when it lands. */
+    projectileTravelMs: 110,
+    /** Curve of that flight (easeIn: it speeds up into the hit). Presentation easing names: src/render/anim/easing.js. */
+    projectileEasing: 'easeInQuad',
+    /** Particles in one block's burst (x vfx.reducedScale in reduced mode). Low: big levels destroy hundreds of blocks. */
+    blockBurstCount: 6,
+    /**
+     * Juice (presentation only; src/render/vfx). Sizes are world units, times ms. One InstancedMesh per effect type,
+     * preallocated to these caps; at a cap the oldest instance is recycled. Particles and trails scale with cellSize.
+     */
+    vfx: Object.freeze({
+      maxProjectiles: 48,
+      maxParticles: 600,
+      maxConfetti: 160,
+      /** Effects "reduced" (settings, or prefers-reduced-motion): particle and confetti counts x this, no shakes. */
+      reducedScale: 0.4,
+      /** Projectile ball and its trail of fading sparks (one spark every trailEveryMs while it flies). */
+      projectile: Object.freeze({ size: 0.16, height: 1.2, trailEveryMs: 16, trailLifeMs: 140, trailSize: 0.45 }),
+      /** Muzzle pop: the firing triangle's scale punches by +punch over ms. */
+      muzzle: Object.freeze({ punch: 0.35, ms: 130 }),
+      /** Block hit: white flash, then squash (flat and wide), then shrink to nothing. */
+      impact: Object.freeze({ flashMs: 55, squashMs: 70, shrinkMs: 120, squashY: 0.35, stretchXZ: 1.3 }),
+      /** Burst sparks: size and speed in board cells (x cellSize); gravity pulls them down the screen. */
+      burst: Object.freeze({ lifeMs: 420, size: 0.28, speed: 5, gravity: 16, height: 1 }),
+      /** Capacity label: the old number fades and shrinks, the new one pops in with a punch and a colour flash. */
+      label: Object.freeze({ outMs: 170, outScale: 0.5, inMs: 260, inFrom: 0.45, flashMs: 200, flashColor: 0xffd24a }),
+      /** Death pop at capacity 0: squash, then shrink to nothing, with a burst of sparks. */
+      death: Object.freeze({ ms: 260, squashAt: 0.3, squash: 0.6, stretch: 1.35, burstCount: 10 }),
+      /** "N/5" counter: punch when N changes, flash when it hits 0. */
+      counter: Object.freeze({ punch: 0.4, punchMs: 240, flashColor: 0xff5252, flashMs: 600 }),
+      /** Win confetti, in CSS pixels on an overlay above the win card. */
+      confetti: Object.freeze({
+        count: 140, durationMs: 2800, width: 12, height: 7, speed: 1150, speedJitter: 0.35, spread: 0.45,
+        gravity: 1500, drag: 0.9, spin: 14, sway: 40, fadeMs: 500, stopFadeMs: 180,
+      }),
+    }),
     /**
      * Per-level presentation overrides keyed by level id (merged over the defaults above). Level files in
      * src/core/levels stay pure: colour ids there are only numbers, and their meaning lives here.
@@ -254,6 +290,9 @@ export const Config = Object.freeze({
       paused: 'Paused',
       resume: 'Resume',
       restartLevel: 'Restart level',
+      /** Settings toggle between full and reduced effects. */
+      effectsFull: 'Effects: full',
+      effectsReduced: 'Effects: reduced',
       won: 'Congratulations!',
       continue: 'Continue',
       /** Replaces Continue on the last level of the cycle (the next level is Level 1 again). */
@@ -293,7 +332,41 @@ export const Config = Object.freeze({
       buttonPadX: 20,
     }),
     /** Seconds. The win/lose cards wait this long after LEVEL_WON / LEVEL_LOST so the last move stays visible. */
-    timing: Object.freeze({ winOverlayDelay: 0.6, loseOverlayDelay: 0.6, fade: 0.15 }),
+    timing: Object.freeze({ winOverlayDelay: 0.6, loseOverlayDelay: 0.6 }),
+    /**
+     * DOM animations (Web Animations API, transform and opacity only). Times ms, distances px, easings CSS strings:
+     * overshoot pops past its target and settles; soft glides in; exit accelerates out.
+     */
+    anim: Object.freeze({
+      overshoot: 'cubic-bezier(0.34, 1.56, 0.64, 1)',
+      soft: 'cubic-bezier(0.22, 1, 0.36, 1)',
+      exit: 'cubic-bezier(0.55, 0, 1, 0.45)',
+      hudInMs: 380,
+      labelOutMs: 140,
+      labelInMs: 280,
+      labelShift: 12,
+      backdropInMs: 220,
+      backdropOutMs: 180,
+      cardInMs: 420,
+      cardOutMs: 200,
+      cardFromScale: 0.6,
+      loseCardFromScale: 0.88,
+      itemInMs: 280,
+      itemStaggerMs: 80,
+      itemShift: 16,
+      shakeMs: 450,
+      shakePx: 7,
+      buttonDownScale: 0.9,
+      buttonDownMs: 70,
+      buttonUpMs: 280,
+      flyMs: 620,
+      countUpMs: 520,
+      moneyPunchScale: 1.35,
+      moneyPunchMs: 340,
+      settingsInMs: 260,
+      settingsOutMs: 180,
+      settingsShift: 28,
+    }),
     /** Opacity of the settings button while it cannot be used (level over). */
     disabledOpacity: 0.35,
   }),
@@ -302,8 +375,13 @@ export const Config = Object.freeze({
     logEvents: false,
     /** Debug level select: ?level=<id> loads any level from levelLibrary on its own, outside the progression. '' = off. */
     levelParam: 'level',
-    /** Layout debugging: outline the render.layout regions and the fitted board, and show cellSize in a small panel. */
+    /**
+     * Debug mode: outline the render.layout regions, and show cellSize, FPS, draw calls, active particles and
+     * renderer.info.memory in a small panel.
+     */
     enabled: false,
+    /** Scales the time fed to the simulation and the effects (1 = real time; 0.25 = slow motion). The DOM UI is unaffected. */
+    timeScale: 1,
     /** Outline colours (drawn on top of everything). */
     layoutColors: Object.freeze({ design: 0xffffff, boardRegion: 0x00e676, board: 0xffc400, slotsRegion: 0x00b0ff, reserveRegion: 0xff4081 }),
     /** Debug panel: a small text box in the bottom-right corner of #ui-root, clear of the centred reserve (pixels). */

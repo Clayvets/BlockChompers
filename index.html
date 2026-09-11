@@ -14,10 +14,21 @@
         display: block;
         touch-action: none; /* taps go straight to pointerdown: no pan, zoom or double-tap delay */
       }
-      /* Layout only. Colours, sizes and timings are CSS custom properties published from Config.ui by UIManager. */
+      /* Win confetti: its own transparent canvas above the UI (Config.render.vfx.confetti). */
+      #canvas-fx {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 2;
+        pointer-events: none;
+      }
+      /* Layout only. Colours and sizes are CSS custom properties published from Config.ui by UIManager; animations are
+         Web Animations on transform and opacity, driven by Config.ui.anim. */
       #ui-root {
         position: fixed;
         inset: 0;
+        z-index: 1;
         pointer-events: none; /* only buttons and modals take clicks */
         font-family: system-ui, sans-serif;
         font-size: var(--ui-size-font);
@@ -85,7 +96,6 @@
         justify-content: center;
         background: var(--ui-color-backdrop);
         pointer-events: auto; /* blocks input to the game underneath */
-        animation: ui-fade var(--ui-fade) ease-out;
       }
       #ui-root .card {
         width: var(--ui-size-card-width);
@@ -103,6 +113,24 @@
         margin: 0;
         font-size: var(--ui-size-title-font);
       }
+      #ui-root .card-reward,
+      #ui-root .fly-label {
+        font-size: var(--ui-size-title-font);
+        font-weight: 700;
+        color: var(--ui-color-money);
+        font-variant-numeric: tabular-nums;
+      }
+      #ui-root .fly-label {
+        position: absolute;
+        left: 0;
+        top: 0;
+        pointer-events: none;
+        white-space: nowrap;
+      }
+      #ui-root .card,
+      #ui-root .fly-label {
+        will-change: transform, opacity;
+      }
       #ui-root .modal[data-result='won'] .card-title { color: var(--ui-color-won); }
       #ui-root .modal[data-result='lost'] .card-title { color: var(--ui-color-lost); }
       #ui-root .button {
@@ -116,14 +144,12 @@
         background: var(--ui-color-button-secondary);
         color: var(--ui-color-button-secondary-text);
       }
-      @keyframes ui-fade {
-        from { opacity: 0; }
-      }
     </style>
   </head>
   <body>
     <canvas id="canvas-game"></canvas>
     <div id="ui-root"></div>
+    <canvas id="canvas-fx"></canvas>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

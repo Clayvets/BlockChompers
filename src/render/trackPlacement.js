@@ -14,11 +14,20 @@ export function trackFromSnapshot({ grid, track }) {
  * @param {{ prevDistance: number, distanceTraveled: number }} unit
  * @param {Track} track
  * @param {number} alpha fraction [0, 1] of the next logic step (snapshot.stepAlpha)
- * @returns {{ x: number, y: number, facing: string }}
+ * @param {{ x?: number, y?: number, facing?: string }} [out] object to fill (pass the same one every frame: no allocation)
+ * @returns {{ x: number, y: number, facing: string }} the same point Track.positionAt() gives, read from the frozen cells
  */
-export function trackDrawPosition(unit, track, alpha) {
+export function trackDrawPosition(unit, track, alpha, out = {}) {
   const from = unit.prevDistance;
   let to = unit.distanceTraveled;
   if (to < from) to += track.length;
-  return track.positionAt(from + (to - from) * alpha);
+  const d = track.normalize(from + (to - from) * alpha);
+  const i = Math.floor(d);
+  const f = d - i;
+  const a = track.cellAt(i);
+  const b = track.cellAt(i + 1);
+  out.x = a.x + (b.x - a.x) * f;
+  out.y = a.y + (b.y - a.y) * f;
+  out.facing = a.facing;
+  return out;
 }

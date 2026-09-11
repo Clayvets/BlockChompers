@@ -30,27 +30,32 @@ export function launchPath(from, entry, entryDir, { lift, curve }) {
   };
 }
 
-/** Point at parameter s in [0, 1]. */
-export function pathPoint({ p0, p1, p2, p3 }, s) {
+/** Point at parameter s in [0, 1] (written into `out` when given). */
+export function pathPoint({ p0, p1, p2, p3 }, s, out = {}) {
   const u = 1 - s;
   const a = u * u * u;
   const b = 3 * u * u * s;
   const c = 3 * u * s * s;
   const d = s * s * s;
-  return { x: a * p0.x + b * p1.x + c * p2.x + d * p3.x, y: a * p0.y + b * p1.y + c * p2.y + d * p3.y };
+  out.x = a * p0.x + b * p1.x + c * p2.x + d * p3.x;
+  out.y = a * p0.y + b * p1.y + c * p2.y + d * p3.y;
+  return out;
 }
 
 /** Direction of travel at parameter s (not normalised; may be zero where a control point coincides). */
-export function pathTangent({ p0, p1, p2, p3 }, s) {
+export function pathTangent({ p0, p1, p2, p3 }, s, out = {}) {
   const u = 1 - s;
   const a = 3 * u * u;
   const b = 6 * u * s;
   const c = 3 * s * s;
-  return {
-    dx: a * (p1.x - p0.x) + b * (p2.x - p1.x) + c * (p3.x - p2.x),
-    dy: a * (p1.y - p0.y) + b * (p2.y - p1.y) + c * (p3.y - p2.y),
-  };
+  out.dx = a * (p1.x - p0.x) + b * (p2.x - p1.x) + c * (p3.x - p2.x);
+  out.dy = a * (p1.y - p0.y) + b * (p2.y - p1.y) + c * (p3.y - p2.y);
+  return out;
 }
+
+const _point = { x: 0, y: 0 };
+/** A fresh pose object for the *Pose() helpers' `out` parameter. */
+export const newPose = () => ({ x: 0, y: 0, dir: { dx: 0, dy: -1 }, air: 0 });
 
 /** Height bump (0 at both ends, 1 halfway) for a unit in the air, so it draws over the units it passes. */
 export function hop(s) {
@@ -75,20 +80,33 @@ export function flightProgress(unit, launchSteps, alpha) {
  * @param {Array<object>} units snapshot units
  * @param {number} spacing Config.track.launchSpacing
  * @param {number} alpha snapshot.stepAlpha
+ * @param {Map<string, number>} [out] map to fill (cleared first); pass the same one every frame to avoid allocations
+ * @param {Array<object>} [scratch] reusable array for the launch-order sort
  * @returns {Map<string, number>} unit id -> back distance (cells)
  */
-export function entryQueueBacks(units, spacing, alpha) {
-  const backs = new Map();
-  if (!(spacing > 0)) return backs;
+export function entryQueueBacks(units, spacing, alpha, out = new Map(), scratch = []) {
+  out.clear();
+  if (!(spacing > 0)) return out;
   let nearest = spacing;
-  for (const u of units) {
-    if (u.state !== 'running' && u.state !== 'eating') continue;
-    const drawn = u.prevDistance + (u.distanceTraveled - u.prevDistance) * alpha;
-    if (drawn >= 0 && drawn < nearest) nearest = drawn;
+  scratch.length = 0;
+  for (let i = 0; i < units.length; i += 1) {
+    const u = units[i];
+    if (u.state === 'launching') {
+      // Insertion sort by launch order (a handful of units at most; no allocation).
+      let j = scratch.length;
+      scratch.push(u);
+      while (j > 0 && scratch[j - 1].launchSeq > u.launchSeq) {
+        scratch[j] = scratch[j - 1];
+        j -= 1;
+      }
+      scratch[j] = u;
+    } else if (u.state === 'running' || u.state === 'eating') {
+      const drawn = u.prevDistance + (u.distanceTraveled - u.prevDistance) * alpha;
+      if (drawn >= 0 && drawn < nearest) nearest = drawn;
+    }
   }
-  const launching = units.filter((u) => u.state === 'launching').sort((a, b) => a.launchSeq - b.launchSeq);
-  launching.forEach((u, rank) => backs.set(u.id, Math.max(0, (rank + 1) * spacing - nearest)));
-  return backs;
+  for (let rank = 0; rank < scratch.length; rank += 1) out.set(scratch[rank].id, Math.max(0, (rank + 1) * spacing - nearest));
+  return out;
 }
 
 /** How far point P is before the entry, measured along the track heading at the entry. */
@@ -103,7 +121,7 @@ function paramAtDepth(path, back) {
   let hi = 1;
   for (let i = 0; i < 30; i += 1) {
     const mid = (lo + hi) / 2;
-    if (depthBefore(path, pathPoint(path, mid)) >= back) lo = mid;
+    if (depthBefore(path, pathPoint(path, mid, _point)) >= back) lo = mid;
     else hi = mid;
   }
   return lo;
@@ -116,13 +134,17 @@ function paramAtDepth(path, back) {
  * `air` is the hop factor in [0, 1] for the height bump.
  * @returns {{ x: number, y: number, dir: { dx: number, dy: number }, air: number }}
  */
-export function flightPose(path, progress, easing, back) {
+export function flightPose(path, progress, easing, back, out = newPose()) {
   let s = ease(easing, progress);
   if (back > 0) s = Math.min(s, paramAtDepth(path, back));
-  const point = pathPoint(path, s);
-  let dir = pathTangent(path, s);
-  if (Math.hypot(dir.dx, dir.dy) < 1e-9) dir = { ...path.entryDir };
-  return { x: point.x, y: point.y, dir, air: hop(s) };
+  pathPoint(path, s, out);
+  pathTangent(path, s, out.dir);
+  if (Math.hypot(out.dir.dx, out.dir.dy) < 1e-9) {
+    out.dir.dx = path.entryDir.dx;
+    out.dir.dy = path.entryDir.dy;
+  }
+  out.air = hop(s);
+  return out;
 }
 
 /**
@@ -135,13 +157,20 @@ export function flightPose(path, progress, easing, back) {
  * @param {string} easing Config.render.motionEasing
  * @returns {{ x: number, y: number, dir: { dx: number, dy: number }, air: number }}
  */
-export function returnPose(from, slot, progress, easing) {
-  if (!from || !(progress < 1)) return { x: slot.x, y: slot.y, dir: { ...HEADING.N }, air: 0 };
+export function returnPose(from, slot, progress, easing, out = newPose()) {
+  if (!from || !(progress < 1)) {
+    out.x = slot.x;
+    out.y = slot.y;
+    out.dir.dx = HEADING.N.dx;
+    out.dir.dy = HEADING.N.dy;
+    out.air = 0;
+    return out;
+  }
   const e = ease(easing, progress);
-  return {
-    x: from.x + (slot.x - from.x) * e,
-    y: from.y + (slot.y - from.y) * e,
-    dir: { dx: slot.x - from.x, dy: slot.y - from.y },
-    air: hop(e),
-  };
+  out.x = from.x + (slot.x - from.x) * e;
+  out.y = from.y + (slot.y - from.y) * e;
+  out.dir.dx = slot.x - from.x;
+  out.dir.dy = slot.y - from.y;
+  out.air = hop(e);
+  return out;
 }

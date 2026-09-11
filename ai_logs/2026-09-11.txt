@@ -272,3 +272,61 @@ README: add this fix to the "v3 – Polish" section under what changed (the per-
 
 Report the layout values you chose and each level's cellSize, and propose a commit message.
 
+=== 2026-09-11T03:12:59-05:00 | session 567fdf5c ===
+Task: v3 – Polish. Add juice on top of the v2-feel tag: VFX, UI animations and satisfying feedback. Everything is presentation only: src/core and its tests must not change, VFX are driven by getState() snapshots and EventBus events, and every tuned value lives in render config. Keep the primitives-only rule: VFX are built from simple shapes (small spheres, quads, flat rectangles) with no textures or image assets. Don't add npm dependencies; write a small tween/easing helper instead.
+
+1) Architecture for VFX:
+- Create src/render/vfx/ with a VfxManager that listens to events and a VfxFactory that is the only place creating VFX geometries and materials, same as PrimitiveFactory.
+- The projectile effect must be swappable: later it will be replaced by bubbles, and that change should only touch VfxFactory and render config.
+- VFX never mutate game state. They follow the pause and debug time scale, and are cleared on restart and level change.
+
+2) Projectile VFX: on UNIT_FIRED, a small projectile leaves the triangle's tip toward the target block, in the unit's color, with a short fading trail.
+- It travels for render.projectileTravelMs with an easing key. The block reacts on visual impact, not on the logic event.
+- Add a tiny muzzle pop on the triangle when it fires (scale punch).
+
+3) Block destruction:
+- On visual impact, the block flashes white briefly, squashes and scales to 0.
+- A small burst of particles in the block's color spawns around it: short-lived, slight gravity, fade and shrink.
+- Keep the count low per block (render.blockBurstCount), because big levels destroy hundreds of blocks.
+
+4) Capacity number animation: every time a triangle fires, its number animates down.
+- The old number slides or fades out and the new one pops in with a scale punch and a quick color flash.
+- At 0, the triangle does a satisfying death pop (squash, scale down, small particle burst) before it's removed.
+- Only regenerate the label when the number changes; never every frame.
+
+5) Win confetti: when the win overlay appears, fire confetti celebrating the player.
+- Colorful flat rectangles in the level palette that burst from the bottom corners or top, flip, drift and fall, rendered above the win card.
+- The duration and count come from config, and the effect stops cleanly when the overlay closes.
+
+6) UI animations: every UI element gets juicy enter and exit animations with overshoot easing.
+- HUD: slides in at level start; the level label transitions when the level changes.
+- Win overlay: backdrop fades in; the card pops in with overshoot; title, reward and button enter with a short stagger. On Continue or Play again, it plays its exit animation first and only then loads the next level.
+- Lose overlay: same enter and exit pattern, with a softer entrance and a small shake on the "Out of space" title.
+- Buttons: squash on pointerdown and bounce back on release.
+- Money: when the reward is added, a "+$X" label flies from the win card to the money counter, and the counter counts up with a punch.
+- Slots counter: punches when N changes, and flashes when it reaches 0.
+- Settings panel: slides and fades in and out.
+- Input to the game is blocked while an overlay is animating.
+
+7) Optimization (required):
+- One InstancedMesh per VFX type, preallocated up to caps in config (render.vfx.maxProjectiles, maxParticles, maxConfetti). Pool and reuse instances; when a cap is reached, recycle the oldest.
+- Shared geometries and materials. Only update active instances, set mesh.count, and flag instanceMatrix and instanceColor for update once per frame.
+- Zero allocations in the render loop: reuse Vector3, Matrix4 and Color objects, and avoid closures created per frame.
+- DOM animations only animate transform and opacity.
+- Add an "Effects: full / reduced" toggle in settings, and default to reduced when prefers-reduced-motion is set. Reduced lowers particle counts and removes shakes.
+- When debug.enabled: show FPS, draw calls, active particles and renderer.info.memory in the debug panel.
+- Performance check: play the Carrot level with 5 units firing and then the win confetti. Report FPS and draw calls, and confirm renderer.info.memory stays stable after restarting 5 times.
+
+Tests (node, no Three.js):
+- Unit tests for the pure presentation helpers: easing functions, the tween scheduler (start, end, stagger, cancel) and the pool (acquire, release, recycle at cap).
+- no-render-imports.test.js and every core test stay green, and core files are unchanged.
+- The build stays clean.
+
+README: fill the "v3 – Polish" section with 3 subsections:
+- what changed;
+- why each change improves feel (feedback clarity, satisfaction, reward moment, UI flow, performance);
+- exact values tuned, as a table with the columns Config key | v2 value | v3 value | Why. Use "—" for new keys.
+Don't change the v1 or v2 sections.
+
+Report the performance numbers and the final tuned values, and propose a commit message.
+

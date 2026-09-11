@@ -301,18 +301,16 @@ Values are copied from `src/config/Config.js` at v1-primitive and on the current
 
 ## v3 – Polish
 
+Goal: add juice on top of v2, meaning effects, UI animation and satisfying feedback, without touching the rules. All
+of v3 is presentation. `src/core` and its tests are unchanged, effects react to snapshots and events, and every value
+lives in `Config.render` or `Config.ui`.
+
 ### What changed
 
-1. **Fixed layout: UI scaling fix.** Cause: the camera fitted its frustum to each level's bounds (grid, track, slots
-   and reserve), so a bigger level zoomed the whole scene out. On Carrot the slots, reserve, units and capacity labels
-   shrank with the board; on a phone, reserve tap targets fell to about 12 px and label digits to 5 or 6 px. Fix: one
-   portrait design layout, `render.layout`, in design units. The camera fits it once per viewport and never refits on
-   a level change. Only the board, meaning the grid plus its track ring, scales: cellSize = min(boardRegion.w /
-   boardCols, boardRegion.h / boardRows, maxCellSize), and the board is centred in its region. Slots, reserve cells,
-   units, labels and the "N/5" counter keep the same size on every level, and a unit keeps its size from the reserve
-   to the track. On resize the whole design scales uniformly, with any extra space as margin. The math is a pure
-   function, `src/render/layout/computeLayout.js`, tested in Node. With `debug.enabled`, the renderer outlines the
-   regions and a small panel shows the level's cellSize.
+1. **Fixed layout (UI scaling fix).** Cause: the camera fitted its frustum to each level's bounds, so a big level
+   zoomed everything out and shrank the slots, reserve, units and labels. Now one portrait design (`render.layout`)
+   is fitted once per viewport, only the board (grid plus track ring) scales to its region, and everything else keeps
+   one size on every level.
 
    | Level | Board incl. ring | cellSize | Cell on a 390 x 844 phone |
    |---|---|---|---|
@@ -321,40 +319,98 @@ Values are copied from `src/config/Config.js` at v1-primitive and on the current
    | Carrot | 25 x 41 | 0.2927 | 11.4 px |
    | Starter | 7 x 5 | 0.75 (clamped) | 29.3 px |
 
-   On that phone a unit is 23 px, a label 18 px, a reserve cell 29 px and a slot 39 px on every level. Units are now
-   longer than a board cell on the bigger levels (about 2 cells on Carrot), so runners at the 1-cell follow distance
-   can overlap on the ring.
+2. **Effects architecture.** `src/render/vfx/`: `VfxManager` listens to events and never touches game state, and
+   `VfxFactory` is the only place that creates effect geometries and materials. Changing the projectile look (a ball
+   today, bubbles later) means one factory method plus render config. Effects run on a presentation clock that stops
+   while paused, follows `debug.timeScale`, and clears on restart and level change. Pure helpers live in
+   `src/render/anim/`: easing with overshoot curves, a pooled tween scheduler and a fixed-capacity pool.
+3. **Projectiles.** When a unit eats a block, a small ball in its colour leaves the triangle's tip with a short trail
+   of fading sparks and reaches the block in 110 ms, speeding up as it goes. The triangle punches its scale as it
+   fires. Core has no separate "fired" event, so the shot is driven by `BLOCK_CONSUMED`.
+4. **Block destruction.** The block stays until the shot lands, then flashes white, squashes flat and wide and shrinks
+   away, while 6 sparks of its colour burst out, fall slightly, fade and shrink.
+5. **Capacity numbers.** Each shot swaps the number: the old one fades and shrinks, the new one pops in with an
+   overshoot and a gold flash. The label is redrawn only when the number changes. At 0 the triangle squashes, shrinks
+   to nothing and bursts into sparks before it is removed.
+6. **Win confetti.** When the win card appears, 140 rectangles in the level's palette burst from the bottom corners,
+   flip, sway and fall for about 2.8 s, on their own canvas above the card. They fade out fast when the card closes.
+7. **UI animations.** The HUD slides in at every level start and the level label slides to its new number. On a win
+   the backdrop fades in, the card pops in with overshoot, and the title, a new "+$X" reward line and the button enter
+   one after another. Continue or Play again plays the exit first and only then loads the next level, while the
+   "+$X" flies to the money counter, which counts up with a punch. The lose card enters more softly and its title
+   shakes. Buttons squash on press and bounce back. The "N/5" counter punches when it changes and flashes red at 0.
+   The settings panel slides and fades. The board takes no input while an overlay animates.
+8. **Performance and settings.** One InstancedMesh per effect type, preallocated to its cap and recycled oldest
+   first; shared geometries and materials; only active instances are uploaded, once per frame. The effect and juice
+   code allocates nothing per frame, and DOM animations touch only transform and opacity. Settings has "Effects: full
+   / reduced": reduced cuts particle and confetti counts to 40% and drops the shake, and it is the default when the
+   system asks for reduced motion. With `debug.enabled`, the debug panel adds FPS, draw calls, active particles and
+   GPU memory.
+9. **Tests.** 223 headless tests, up from 205 in v2: the layout, the easing curves, the tween scheduler (start, end,
+   stagger, cancel) and the pool (acquire, release, recycle at cap). Core and its tests are unchanged.
+
+### Why it improved feel
+
+- **Feedback clarity.** In v2 a block simply vanished as a unit passed its lane. Now each hit is a visible shot from
+  one unit to one block, the block reacts when the shot lands, the unit's number ticks down with each shot, and the
+  "N/5" counter punches and flashes as room runs out.
+- **Satisfaction.** Muzzle pops, white flashes, squash and shrink, and small spark bursts make every hit feel physical,
+  and a unit that finishes its job pops instead of blinking out.
+- **Reward moment.** Confetti in the level's own colours over the win card, the reward flying into the money and the
+  count-up punch turn the payout into a moment instead of a number change.
+- **UI flow.** Overshoot entrances and a short stagger lead the eye from title to reward to button. Exits finish
+  before the next level loads, so nothing jumps, and a stray tap during a transition cannot launch a unit. Fixed-size
+  controls keep tap targets and labels readable on the biggest level.
+- **Performance.** On Carrot with five units firing, the frame loop runs at about 650 frames per second uncapped
+  (about 1.5 ms per frame); effects add 2 draw calls to the board's 850 and confetti adds 1. GPU memory stays at 12
+  geometries and 31 textures across 5 restarts. Reduced effects keep it comfortable for motion-sensitive players.
 
 ### Exact values tuned
 
-Values are copied from `src/config/Config.js`; "—" means the key is new in v3. Layout values are design units: the
-design is 10 wide and 20 tall, and one unit is one slot.
+Values are copied from `src/config/Config.js`; "—" means the key is new in v3.
 
 | Config key | v2 value | v3 value | Why |
 |---|---|---|---|
-| `render.layout.designWidth` | — | `10` | Width of the fixed portrait design. |
-| `render.layout.designHeight` | — | `20` | Height; 1:2 matches a phone below the HUD bar. |
-| `render.layout.boardRegion` | — | `{ x: 0.4, y: 0.4, w: 9.2, h: 12 }` | Where the board scales to fit; the margins leave room for units on the ring. |
+| `render.layout.designWidth` / `designHeight` | — | `10` / `20` | The fixed portrait design; 1:2 fits a phone below the HUD. |
+| `render.layout.boardRegion` | — | `{ x: 0.4, y: 0.4, w: 9.2, h: 12 }` | Where the board scales to fit; margins leave room for units on the ring. |
 | `render.layout.slotsRegion` | — | `{ x: 0.4, y: 12.9, w: 9.2, h: 1 }` | Band for the 5 parking slots and the counter. |
-| `render.layout.reserveRegion` | — | `{ x: 0.4, y: 14.35, w: 9.2, h: 5.25 }` | 7 reserve rows, enough for Carrot's 25 units. |
-| `render.layout.slotSize` | — | `1` | Slot pitch; the tile is 90% of it. |
-| `render.layout.reserveCellSize` | — | `0.75` | Reserve pitch: 29 px tap targets on a 390 px wide phone. |
-| `render.layout.unitSize` | — | `0.6` | One unit size everywhere, reserve, slot and track. |
-| `render.layout.labelSize` | — | `0.45` | Capacity label height, readable at 3 digits. |
-| `render.layout.counter` | — | `{ x: 8.3, y: 13.4, height: 0.55 }` | "N/5" counter, right of the slot row. |
-| `render.layout.maxCellSize` | — | `0.75` | Cap for small boards; a unit is then 0.8 of a cell, as in v1. |
-| `debug.enabled` | — | `false` | Turns on the layout outlines and the cellSize panel. |
-| `debug.layoutColors` | — | `{ design: 0xffffff, boardRegion: 0x00e676, board: 0xffc400, slotsRegion: 0x00b0ff, reserveRegion: 0xff4081 }` | Outline colours. |
-| `debug.panel` | — | `{ right: 8, bottom: 8, padding: 6, font: '11px ui-monospace, monospace', color: '#ffffff', background: 'rgba(0, 0, 0, 0.65)' }` | Debug panel style, bottom right, clear of the reserve. |
+| `render.layout.reserveRegion` | — | `{ x: 0.4, y: 14.35, w: 9.2, h: 5.25 }` | 7 reserve rows, enough for Carrot. |
+| `render.layout.slotSize` / `reserveCellSize` | — | `1` / `0.75` | Slot and reserve pitch: 39 px and 29 px targets on a 390 px phone. |
+| `render.layout.unitSize` / `labelSize` | — | `0.6` / `0.45` | One unit and label size everywhere. |
+| `render.layout.counter` | — | `{ x: 8.3, y: 13.4, height: 0.55 }` | "N/5" counter, right of the slots. |
+| `render.layout.maxCellSize` | — | `0.75` | Cap for small boards; a unit is then 0.8 of a cell. |
 | `render.cellSize` | `1` | removed | Replaced by the per-level cellSize. |
 | `render.camera.padding` | `1` | removed | The design has its own margins. |
-| `render.inventory.gapBelowGrid` | `0.6` | removed | Replaced by the layout regions. |
-| `render.inventory.slotGap` | `0.2` | removed | Replaced by `render.layout.slotSize` and `reserveCellSize`. |
-| `render.inventory.slotsRowOffset` | `0.5` | removed | Replaced by `render.layout.slotsRegion`. |
-| `render.inventory.reserveRowOffset` | `2.1` | removed | Replaced by `render.layout.reserveRegion`. |
-| `render.label.worldSize` | `0.6` | removed | Replaced by `render.layout.labelSize`. |
-| `render.slotCounter.offsetX` | `1.4` | removed | Replaced by `render.layout.counter`. |
-| `render.slotCounter.offsetY` | `0` | removed | Replaced by `render.layout.counter`. |
-| `render.slotCounter.height` | `0.7` | removed | Replaced by `render.layout.counter`. |
-| `render.unitSize` | `0.8` | `0.8` | No longer drawn; kept because a core test compares `track.launchSpacing` with it. |
-| `render.launchLift` | `0.7` | `0.7` | Same value, now in design units instead of board cells. |
+| `render.inventory.gapBelowGrid` / `slotGap` / `slotsRowOffset` / `reserveRowOffset` | `0.6` / `0.2` / `0.5` / `2.1` | removed | Replaced by the layout regions. |
+| `render.label.worldSize` | `0.6` | removed | Replaced by render.layout.labelSize. |
+| `render.slotCounter.offsetX` / `offsetY` / `height` | `1.4` / `0` / `0.7` | removed | Replaced by render.layout.counter. |
+| `render.unitSize` | `0.8` | `0.8` | No longer drawn; a core test still compares the follow distance with it. |
+| `render.launchLift` | `0.7` | `0.7` | Same value, now in design units. |
+| `render.projectileTravelMs` | — | `110` | Short enough to feel instant, long enough to see. |
+| `render.projectileEasing` | — | `'easeInQuad'` | Speeds up into the hit. |
+| `render.blockBurstCount` | — | `6` | Readable burst; low because big levels break hundreds of blocks. |
+| `render.vfx.maxProjectiles` / `maxParticles` / `maxConfetti` | — | `48` / `600` / `160` | Preallocated caps; the oldest instance is recycled. |
+| `render.vfx.reducedScale` | — | `0.4` | Reduced effects: 40% of the particles and confetti. |
+| `render.vfx.projectile` | — | `{ size: 0.16, height: 1.2, trailEveryMs: 16, trailLifeMs: 140, trailSize: 0.45 }` | Ball size, draw height and its trail of sparks. |
+| `render.vfx.muzzle` | — | `{ punch: 0.35, ms: 130 }` | Scale punch on the firing triangle. |
+| `render.vfx.impact` | — | `{ flashMs: 55, squashMs: 70, shrinkMs: 120, squashY: 0.35, stretchXZ: 1.3 }` | White flash, squash, then shrink of a hit block. |
+| `render.vfx.burst` | — | `{ lifeMs: 420, size: 0.28, speed: 5, gravity: 16, height: 1 }` | Spark life, size, speed and pull, in board cells. |
+| `render.vfx.label` | — | `{ outMs: 170, outScale: 0.5, inMs: 260, inFrom: 0.45, flashMs: 200, flashColor: 0xffd24a }` | Old number fades and shrinks; new one pops with a gold flash. |
+| `render.vfx.death` | — | `{ ms: 260, squashAt: 0.3, squash: 0.6, stretch: 1.35, burstCount: 10 }` | Squash, shrink and sparks at capacity 0. |
+| `render.vfx.counter` | — | `{ punch: 0.4, punchMs: 240, flashColor: 0xff5252, flashMs: 600 }` | Counter punch on change, red flash at 0. |
+| `render.vfx.confetti` | — | `{ count: 140, durationMs: 2800, width: 12, height: 7, speed: 1150, speedJitter: 0.35, spread: 0.45, gravity: 1500, drag: 0.9, spin: 14, sway: 40, fadeMs: 500, stopFadeMs: 180 }` | Count, time and motion of the win confetti (CSS pixels). |
+| `ui.anim.overshoot` / `soft` / `exit` | — | `'cubic-bezier(0.34, 1.56, 0.64, 1)'` / `'cubic-bezier(0.22, 1, 0.36, 1)'` / `'cubic-bezier(0.55, 0, 1, 0.45)'` | Pop past the target, glide in, accelerate out. |
+| `ui.anim.hudInMs` / `labelOutMs` / `labelInMs` / `labelShift` | — | `380` / `140` / `280` / `12` | HUD slide-in and the level label swap. |
+| `ui.anim.backdropInMs` / `backdropOutMs` / `cardInMs` / `cardOutMs` | — | `220` / `180` / `420` / `200` | Result overlay in and out. |
+| `ui.anim.cardFromScale` / `loseCardFromScale` | — | `0.6` / `0.88` | Win card pops from small; the lose card enters softer. |
+| `ui.anim.itemInMs` / `itemStaggerMs` / `itemShift` | — | `280` / `80` / `16` | Title, reward and button enter one after another. |
+| `ui.anim.shakeMs` / `shakePx` | — | `450` / `7` | Small shake on "Out of space" (off in reduced effects). |
+| `ui.anim.buttonDownScale` / `buttonDownMs` / `buttonUpMs` | — | `0.9` / `70` / `280` | Squash on press, bounce on release. |
+| `ui.anim.flyMs` / `countUpMs` / `moneyPunchScale` / `moneyPunchMs` | — | `620` / `520` / `1.35` / `340` | "+$X" flight and the money count-up punch. |
+| `ui.anim.settingsInMs` / `settingsOutMs` / `settingsShift` | — | `260` / `180` / `28` | Settings panel slide and fade. |
+| `ui.text.effectsFull` / `effectsReduced` | — | `'Effects: full'` / `'Effects: reduced'` | Settings toggle labels. |
+| `ui.timing.fade` | `0.15` | removed | Replaced by ui.anim (the old CSS fade). |
+| `debug.enabled` | — | `false` | Layout outlines and the debug panel. |
+| `debug.timeScale` | — | `1` | Slow motion for the simulation and effects. |
+| `debug.layoutColors` | — | `{ design: 0xffffff, boardRegion: 0x00e676, board: 0xffc400, slotsRegion: 0x00b0ff, reserveRegion: 0xff4081 }` | Outline colours. |
+| `debug.panel` | — | `{ right: 8, bottom: 8, padding: 6, font: '11px ui-monospace, monospace', color: '#ffffff', background: 'rgba(0, 0, 0, 0.65)' }` | Debug panel style, bottom right. |
