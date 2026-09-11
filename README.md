@@ -612,3 +612,186 @@ v3 dropped it. The table lists every key v3 added or removed; v3 changed no exis
 - **Sound.** All 15 sounds are synthesised, and no audio files ship. During a pause, board sounds already playing
   finish (the longest, the rush, lasts 0.7 s); only new ones wait. `debug.timeScale` is a config value, and the DOM
   UI and its sounds keep real time.
+
+## Styled – Fish of Fortune
+
+Step 1 of the Fish of Fortune look is 3D only: the artist's fish replaces the triangle units, and the artist's canal
+replaces the flat track tiles. Everything else is exactly as in v3: the HUD, overlays, buttons, the "N/5" counter,
+capacity labels, blocks, slots, reserve tiles, background, effects and sound. `src/core`, the level files and their
+tests are unchanged, and so are `PrimitiveFactory`, `UIManager`, `VfxFactory` and `SfxBank`.
+
+### Asset pipeline
+
+**Source.** The artist's Blender 4.3 files stay outside the repo, and the export never modifies them:
+
+| File | Contents | Exported |
+|---|---|---|
+| `Art.blend` | The fish: `Mesh_0` (1,634 triangles) skinned to `Armature_Fish` (10 bones), material `M_Fish_Clean` with packed 2048² base-colour and roughness/metallic textures, and the actions `Fish_Idle`, `Fish_Swim` and `Fish_Bubble_Spit` | `fish.glb` |
+| `Fish_Rail.blend` | The rail: one fused 8 x 8 m loop (`Fish_Rail_Track`) with its water (`Fish_Rail_Water`), 36 flow chevrons animated through shape keys, a path curve, a preview camera and two lights | the track pieces |
+
+**Export command.** Point the script at Blender and at the folder holding the .blend files:
+
+```bash
+BLENDER_PATH="C:/Program Files/Blender Foundation/Blender 4.3/blender.exe" ART_DIR="C:/Users/<you>/Downloads/Art" npm run export:models
+```
+
+`npm run export:models` runs `tools/blender/export_glb.py` headless in Blender once per job listed in
+`tools/blender/models.json`, then validates the output with `npm run validate:models`. Blender opens each .blend in
+memory, and the script never saves it: every change (the downscaled textures, the flattened water, the cut pieces)
+exists only in that Blender session. Running it again writes byte-identical GLBs.
+
+**Export settings** (Blender 4.3 glTF exporter):
+
+| Setting | Value |
+|---|---|
+| Format and axes | GLB, Y-up (Blender +Z becomes glTF +Y) |
+| Objects | Only the ones the manifest lists; no cameras, lights or extras |
+| Modifiers | Applied; the fish's armature is kept as a skin (up to 4 influences per vertex, rest pose) |
+| Textures | Embedded PNG. The fish's two textures are downscaled from 2048² to 512² (`textureSize`); the originals stay in the .blend |
+| Animation | Fish: every action as its own clip (`ACTIONS` mode, sampled every frame). Track: none |
+| Compression | None (no Draco) |
+| Pivots | The fish is centred on its bounding box. Each track piece sits at the canal centre of its cell |
+
+**The track cut.** The rail is one loop, so the export cuts the pieces out of it with bisect planes (Blender metres,
+top view, y up):
+- **Straight piece:** one canal cell of the south side, from x -0.625 to 0.625, from the outer edge (y -4.0) in to the
+  canal's inner edge (y -2.2).
+- **Corner piece:** the south-east corner, x 2.2 to 4.0 and y -4.0 to -2.2.
+- **Dropped:** the inner rim, the pool and the walls standing in the inner cut plane, so the canal meets the board's
+  first cells directly.
+- **Scale and pivot:** each piece is moved so the canal centre of its cell (the rail's path, 2.825 m out) is the
+  origin, then scaled by 1 / 1.25 (the canal width). One game cell is then 1 unit and the canal spans [-0.5, 0.5]
+  across. In the GLB, a straight piece's outer rim points +Z and the corner's rims +X and +Z.
+- **Chevron:** the chevron nearest the south side's centre, turned 180° to point +X.
+- **Safety check:** the export fails if the rail no longer matches these numbers, meaning the path is off the canal
+  centre or the water edges have moved.
+
+**Water colour.** Blender builds the water's base colour from procedural nodes (a Voronoi pattern into a colour ramp),
+which glTF cannot carry. The export routes that colour through an Emission shader, bakes it in Cycles at 64² over 4
+frames of its animation, and averages it into a flat base colour: linear (0.358, 0.873, 0.986), #a1f0fd. The water's
+emission and the transmission of the water (0.45) and outer rim (0.25) are exported as they are.
+
+**Output folder: `public/assets/models/`**
+
+| File | Size | Contents |
+|---|---|---|
+| `fish.glb` | 474.7 KB | 1 skinned mesh, 1,634 triangles, 10 joints, 2 textures (512² PNG, 210 + 162 KB), animations Fish_Idle 2.04 s, Fish_Swim 1.04 s, Fish_Bubble_Spit 1.67 s |
+| `track_straight.glb` | 4.6 KB | 36 triangles, materials Mat_OuterRim, Mat_CanalBed, Mat_CanalWater; 1 x 1.44 cells, 0.52 cell high |
+| `track_corner.glb` | 6.5 KB | 93 triangles, same materials; 1.44 x 1.44 cells |
+| `track_chevron.glb` | 1.5 KB | 2 triangles, emissive Mat_Chevrons (strength 2.4) |
+
+`tools/glb/validate-models.mjs` checks each file with no dependencies: glTF magic and version 2, the JSON chunk,
+buffer and accessor ranges, embedded images and their size, and no Draco. It prints meshes, materials, textures,
+animations, bounding box and size. `tools/blender/inspect_blend.py` inventories a .blend read-only, and
+`tools/blender/render_reference.py` renders the art from the game's top-down view for comparison.
+
+### In the game
+
+- **Loading.** `src/render/assets/AssetLoader.js` loads every GLB once, before the start screen appears; there is no
+  loading screen. A file that fails logs a console error naming it, and that model falls back to its primitive.
+- **Factory.** `src/render/StyledFactory.js` extends `PrimitiveFactory`, replaces only unit and track creation, and is
+  swapped in at the composition root (`main.js`).
+- **Fish.**
+  - Each unit is a `SkeletonUtils` clone (geometry and textures shared), centred and sized from its bounding box, and
+    turned 180° to face the unit's heading.
+  - It turns with the existing rotation damping. Labels, effects, the death pop and slot parking work unchanged,
+    because the fish lives inside the same unit group as the cone did.
+  - It plays Swim while moving and Idle in the reserve and slots, through an AnimationMixer on the presentation clock,
+    so it stops while paused and follows `debug.timeScale`.
+  - **Size:** a fish is `render.layout.unitSize` long unless that would make it wider than `canalFit` of its one-cell
+    canal:
+
+    | Level | cellSize | Fish length | Width / canal |
+    |---|---|---|---|
+    | Level 1 | 0.46 | 0.600 | 0.73 |
+    | Panda | 0.383 | 0.549 | 0.80 |
+    | Carrot | 0.293 | 0.419 | 0.80 |
+
+  - **Tint:** one shared material per palette colour, patched with `onBeforeCompile`. The texture's mid-gray body takes
+    the palette colour, darker details stay darker, light areas (eye whites, fins, highlights) fade back to the
+    texture, and a contrast rim outlines black and white fish. The fish is not tone-mapped, so its body matches its
+    blocks (red #f50f3c gives a lit side of #ff4856 and a shaded side of #ac1f2e).
+- **Track.** `src/render/layout/computeTrackPieces.js` (pure) returns one piece per ring cell, with its position,
+  rotation (outer rim outward) and travel heading for clockwise or counter-clockwise tracks. The straights and the 4
+  corners are one InstancedMesh per piece type and material: 6 draw calls in place of v3's one mesh per ring tile.
+  The entry corner is tinted through its instance colour. The chevrons are one more InstancedMesh, flowing along the
+  canal's rounded centre line in the travel direction at the rail's speed (one spacing every 2 s).
+- **Lighting.** The GLB meshes sit on their own layer. The Renderer draws them first under `render.lighting`, taken
+  from Fish_Rail.blend's sun, world and fill light, with AgX tone mapping like the .blend files. It then draws
+  everything else as in v3, under the v3 lights with no tone mapping and without clearing the depth buffer. Labels
+  and effects draw in that v3 pass. Blocks, empty tiles, slots, reserve cells and the background are unchanged: the
+  same snapshot (units left out) rendered through both factories on Level 1, Panda and Carrot gives no differing
+  pixel outside the canal's band around the ring. The camera stays the strictly top-down orthographic one.
+- **Disposal.** Fish clones (skeleton, mixer) and track instances are disposed on restart and level change; the
+  loaded GLBs stay cached.
+
+### New config keys
+
+| Config key | Value | Why |
+|---|---|---|
+| `render.models.fish.url` | `'assets/models/fish.glb'` | The exported fish. |
+| `render.models.fish.scale` / `canalFit` | `1` / `0.8` | Length unitSize x scale, width at most 80% of the canal. |
+| `render.models.fish.rotationOffset` / `yOffset` | `180` / `0` | The model faces -X; units head +X. |
+| `render.models.fish.tintMaterialNames` | `['M_Fish_Clean']` | The one material in Art.blend. |
+| `render.models.fish.toneMapped` | `false` | Fish show their palette colour like the blocks; AgX dulled a #f50f3c fish to #b03e3f. |
+| `render.models.fish.tint` | `{ strength: 1, bodyLuminance: 0.22, highlightStart: 0.35, highlightEnd: 0.75, minLuminance: 0.02, rim: 0.35, rimPower: 2.5, rimSwitch: 0.35, rimLight: 0xffffff, rimDark: 0x0b2233 }` | Body gray = palette colour (the texture's body is linear 0.18 to 0.22), light areas stay light, black lifted a little, contrast rim for black and white. |
+| `render.models.fish.animations` | `{ swim: 'Fish_Swim', idle: 'Fish_Idle', fadeMs: 200, swimSpeed: 1, idleSpeed: 1 }` | Clips and cross-fade. |
+| `render.models.track.straightUrl` / `cornerUrl` / `chevronUrl` | `'assets/models/track_straight.glb'` / `'assets/models/track_corner.glb'` / `'assets/models/track_chevron.glb'` | The exported pieces. |
+| `render.models.track.transmissionAsOpacity` / `transmissionWeight` | `true` / `0.65` | Transparency instead of three.js transmission (an extra scene render each frame); 0.65 matches the Blender reference render's water and rim. |
+| `render.models.track.entryTint` | `0xb4c8dc` | Entry corner about 25 levels darker, like v3's entry tile. |
+| `render.models.track.chevrons` | `{ spacing: 0.481, periodMs: 2000, cornerRadius: 0.382 }` | The rail's chevron spacing, flow speed and corner radius, in cells. |
+| `render.lighting.layer` | `1` | Layer that keeps the model lights on the GLB meshes only. |
+| `render.lighting.toneMapping` / `exposure` | `'agx'` / `1` | The .blend files use Blender's AgX view. |
+| `render.lighting.hemisphere` | `{ sky: 0xa1bfd9, ground: 0x8198b1, intensity: 1 }` | Fish_Rail.blend's world (0.07, 0.1, 0.14) plus its blue fill light from above. |
+| `render.lighting.directional` | `{ color: 0xfffdf6, intensity: 4.2, position: [-0.161, 0.641, 0.751] }` | Fish_Rail.blend's sun: 4.2 W/m², warm, from the south and above. |
+
+### Checks
+
+- **Tests.** 257 headless tests, 21 new:
+  - `computeTrackPieces`: every ring cell covered once with corners in the 4 corners on every level, rims outward,
+    headings along core Track travel for cw and ccw, and the chevron loop.
+  - The exported pieces placed side by side: identical top surfaces across every joint, with no step and no hole.
+  - The size normalisation.
+  - GLB validation of every exported file.
+- **Performance.** Carrot, desktop browser, 765 x 599 canvas. One script drives both factories the same way: it
+  launches a unit whenever fewer than five are moving and measures 600 frames after 120 warm-up frames.
+
+  | | v3 | Styled |
+  |---|---|---|
+  | CPU per frame (logic, sync, render calls) | 1.5 ms | 2.2 ms |
+  | Frame including the wait for the GPU | 2.3–3.1 ms | 4.4–4.6 ms |
+  | Draw calls | 784 | 663 |
+
+  - **Where the extra time goes:** hiding the 25 fish brings the styled frame back to v3's (3.1 ms against 3.0 ms in
+    the same batch); hiding the track saves only 0.2 ms. Most of the fish cost comes after the draw calls are
+    submitted: each fish is a skinned PBR draw that uploads its bone texture every frame.
+  - **In the running game** (frame loop uncapped, CPU and GPU overlapping): styled runs at 478–485 fps (2.0 ms) with
+    672 draw calls on average. The earlier v3 sound checks measured 612–696 fps. Both stay far inside a 60 Hz frame
+    (16.7 ms).
+  - **Memory:** GPU memory stays at 14 geometries and 58 textures across 5 restarts. It returns to the same count on
+    every level change (44 on Level 1, 34 on Panda, 54 on Carrot); textures scale with the units, which each have
+    their own label canvases and bone texture.
+- **Compared with Blender** (the same top-down view of the south-east corner):
+
+  | Element | Blender | In game |
+  |---|---|---|
+  | Water | #94b5bd | #8fb5c5 |
+  | Rim | #8badb8 | #87acba |
+
+  The fish shape, proportions, pose and the chevrons match. The differences:
+  - The water's Voronoi pattern is flattened to its average colour.
+  - There are no shadows; Blender's EEVEE casts the fish's and the inner rim's.
+  - The inner rim and the pool are left out.
+  - An untinted fish renders about 19 levels darker than Blender's AgX, because the fish is not tone-mapped.
+
+### Known limitations
+
+- **Labels over small fish.** Capacity labels keep their v3 size, so on Panda and Carrot they cover more of the
+  smaller fish, most of all in the reserve.
+- **Low contrast on light backgrounds.** The rail's pale water sits on the levels' light-blue backgrounds with less
+  contrast than v3's darker ring tiles.
+- **Fish overlap when close.** Runners keep one cell apart (`track.launchSpacing`), and a fish is longer than a cell
+  on every level (0.60 on Level 1's 0.46 cells), so fish right behind each other overlap end to end. The v3 cones
+  overlapped too, by more on Panda and Carrot.
+- **Fish cost.** On Carrot, the 25 skinned fish about double the time the GPU still needs once a frame is submitted
+  (see Performance). Idle fish in the reserve and slots still animate and upload their skeletons every frame.

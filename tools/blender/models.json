@@ -1,0 +1,24 @@
+{
+  "comment": "Export settings for npm run export:models (tools/blender/export_glb.py). Source .blend files are read from $ART_DIR and never modified. Lengths are Blender metres.",
+  "outDir": "public/assets/models",
+  "jobs": {
+    "fish": {
+      "blend": "Art.blend",
+      "objects": ["Armature_Fish", "Mesh_0"],
+      "textureSize": 512,
+      "output": "fish.glb"
+    },
+    "track": {
+      "blend": "Fish_Rail.blend",
+      "trackObject": "Fish_Rail_Track",
+      "waterObject": "Fish_Rail_Water",
+      "chevronObject": "Fish_Rail_Chevrons",
+      "pathObject": "Fish_Rail_Path",
+      "keepMaterials": ["Mat_OuterRim", "Mat_CanalBed", "Mat_CanalWater"],
+      "flattenMaterials": ["Mat_CanalWater"],
+      "bake": { "size": 64, "samples": 16, "frames": [1, 13, 25, 37] },
+      "canal": { "inner": 2.2, "outer": 3.45, "edge": 4.0 },
+      "outputs": { "straight": "track_straight.glb", "corner": "track_corner.glb", "chevron": "track_chevron.glb" }
+    }
+  }
+}

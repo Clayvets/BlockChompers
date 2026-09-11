@@ -9,9 +9,13 @@ import { VfxManager } from './vfx/VfxManager.js';
 import { trackDrawPosition, trackFromSnapshot } from './trackPlacement.js';
 import { HEADING, launchPath, flightProgress, flightPose, entryQueueBacks, returnPose, newPose } from './launchPlacement.js';
 import { computeLayout, fitView, boardPoint, slotPoint, reservePoint } from './layout/computeLayout.js';
+import { computeTrackPieces } from './layout/computeTrackPieces.js';
 
 const WHITE = new THREE.Color(1, 1, 1);
 const USED_STATES = new Set([UnitState.LAUNCHING, UnitState.RUNNING, UnitState.EATING, UnitState.RETURNED]);
+/** States in which a styled unit plays its swim animation (idle otherwise). */
+const MOVING_STATES = new Set([UnitState.LAUNCHING, UnitState.RUNNING, UnitState.EATING]);
+const TONE_MAPPING = { agx: THREE.AgXToneMapping, aces: THREE.ACESFilmicToneMapping, neutral: THREE.NeutralToneMapping, none: THREE.NoToneMapping };
 /** Numeric key of a grid cell (no string per lookup). */
 const cellKey = (row, col) => row * 1024 + col;
 /** Reserve shift order within a column (a module function, so sorting creates no closure per frame). */
@@ -33,6 +37,10 @@ const clearList = (list) => {
  * owns; the VfxManager borrows blocks and unit positions through the host methods (takeBlockMesh, unitTip, ...).
  * The visual moments sounds sync to go out as cues (src/app/Cues.js) on the optional `cues` bus: a block breaking (the
  * projectile lands), a capacity number dropping, a death pop starting, a unit landing in its slot, the counter hitting 0.
+ *
+ * Styled look (StyledFactory, Fish of Fortune step 1): units are GLB fish (their animator runs on the presentation
+ * clock) and the track is built from GLB pieces placed by layout/computeTrackPieces.js. The GLB meshes sit on
+ * render.lighting.layer and render() draws them in a first pass under their own lights, then the rest as in v3.
  *
  * Layout: a fixed portrait design (Config.render.layout) in design units, which are world units on the x/z plane.
  * computeLayout() (pure) gives every rect; the camera shows the whole design and never refits on a level change.
@@ -101,6 +109,17 @@ export class Renderer {
   #size = { width: 1, height: 1 };
   /** Screen pixels covered by DOM chrome (HUD bar); fitCamera keeps the board out of them. */
   #insets = { top: 0, bottom: 0 };
+  /** Styled factory: GLB models live on render.lighting.layer and are drawn in their own pass (see render()). */
+  #modelPass = false;
+  #modelLayer = 1;
+  #modelToneMapping = THREE.NoToneMapping;
+  /** Board cell units -> world x/z into `out`, without allocating (the chevron flow calls it every frame). */
+  #toWorld = (x, y, out) => {
+    const { boardOrigin, cellSize } = this.#layout;
+    out.x = boardOrigin.x + x * cellSize;
+    out.y = boardOrigin.y + y * cellSize;
+    return out;
+  };
 
   /**
    * @param {{ canvas: HTMLCanvasElement, config: object, factory?: PrimitiveFactory, cues?: import('../app/Cues.js').CueBus }} deps
@@ -123,11 +142,14 @@ export class Renderer {
   /** WebGLRenderer on `canvas`, scene with render.background, lights, camera. */
   init() {
     this.gl = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true });
+    this.gl.outputColorSpace = THREE.SRGBColorSpace;
+    this.gl.info.autoReset = false; // render() resets it once per frame, so the stats cover both passes
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(this.config.render.background);
     this.#levelRoot = new THREE.Group();
     this.scene.add(this.#levelRoot);
     this.initLights();
+    this.#initModelLights();
     this.initOrthographicCamera();
     const { vfx } = this.config.render;
     this.#labelFlash = new THREE.Color(vfx.label.flashColor);
@@ -161,6 +183,26 @@ export class Renderer {
     const sun = new THREE.DirectionalLight(l.directional, l.directionalIntensity);
     sun.position.set(...l.directionalPosition);
     this.scene.add(sun);
+  }
+
+  /**
+   * With a factory that draws GLB models (StyledFactory: it has track()), render.lighting's hemisphere and directional
+   * lights go on the model layer. Lights only reach what the camera renders on their layer, so they light the models
+   * alone, and the v3 lights above never reach the models.
+   */
+  #initModelLights() {
+    const lighting = this.config.render.lighting;
+    this.#modelPass = Boolean(lighting) && typeof this.factory.track === 'function';
+    if (!this.#modelPass) return;
+    this.#modelLayer = lighting.layer;
+    this.#modelToneMapping = TONE_MAPPING[lighting.toneMapping] ?? THREE.NoToneMapping;
+    const hemi = new THREE.HemisphereLight(lighting.hemisphere.sky, lighting.hemisphere.ground, lighting.hemisphere.intensity);
+    const sun = new THREE.DirectionalLight(lighting.directional.color, lighting.directional.intensity);
+    sun.position.set(...lighting.directional.position);
+    for (const light of [hemi, sun]) {
+      light.layers.set(this.#modelLayer);
+      this.scene.add(light);
+    }
   }
 
   /**
@@ -245,13 +287,29 @@ export class Renderer {
     this.#blockMeshes.delete(key);
   };
 
-  /** Guide tiles on every ring cell (render.track.showGuide); the entry corner is tinted. */
+  /**
+   * The track on every ring cell (render.track.showGuide). A factory with track() (StyledFactory) builds the canal
+   * from GLB pieces placed by computeTrackPieces; otherwise, or if its models did not load, flat guide tiles with the
+   * entry corner tinted.
+   */
   buildTrack(trackState) {
     if (!this.config.render.track.showGuide) return;
     const xs = trackState.corners.map((c) => c.x);
     const ys = trackState.corners.map((c) => c.y);
     const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
     const entry = trackState.corners[0];
+    if (typeof this.factory.track === 'function') {
+      const { margin, direction } = trackState;
+      const dims = { rows: Math.round(y1 - y0 + 1 - 2 * margin), cols: Math.round(x1 - x0 + 1 - 2 * margin), margin, direction };
+      const entryCorner = (entry.y === y0 ? 'N' : 'S') + (entry.x === x0 ? 'W' : 'E');
+      const pieces = computeTrackPieces({ ...dims, entryCorner });
+      const styled = this.factory.track({ pieces, dims, cellSize: this.#layout.cellSize, toWorld: this.#toWorld });
+      if (styled) {
+        this.#trackGroup = styled;
+        this.#levelRoot.add(styled);
+        return;
+      }
+    }
     const group = new THREE.Group();
     for (let x = x0; x <= x1; x += 1) {
       this.#tile(group, x, y0, entry);
@@ -333,6 +391,7 @@ export class Renderer {
     }
     this.#syncUnits(snapshot, dt);
     this.#updateSlotCounter(snapshot, this.#clock);
+    if (this.#trackGroup && this.#trackGroup.userData.animator) this.#trackGroup.userData.animator.update(dt);
     if (this.vfx) this.vfx.update(dt);
   }
 
@@ -363,6 +422,7 @@ export class Renderer {
     this.scene.background.setHex(this.#style.background);
     this.#layout = this.#layoutFor(snapshot);
     const layout = this.#layout;
+    if (typeof this.factory.setLayout === 'function') this.factory.setLayout(layout);
     if (layout.reserveOverflow) console.warn(`Level "${snapshot.levelId}" needs ${snapshot.inventory.reserveRows} reserve rows; render.layout fits ${layout.reserve.rows}`);
     this.#track = trackFromSnapshot(snapshot);
     const entry = this.#track.positionAt(0);
@@ -426,6 +486,7 @@ export class Renderer {
         group.userData.pickAs = null;
         this.#applyLabel(group, unit, now);
         this.#applyJuice(group, now, true);
+        if (group.userData.animator) group.userData.animator.update(dt, true);
         continue;
       }
       alive.add(unit.id);
@@ -458,6 +519,7 @@ export class Renderer {
       this.designToWorld(pose.x, pose.y, unitHeight / 2 + (pose.air || 0) * hopHeight, group.position);
       this.#turn(group, pose.dir, dt);
       this.#applyJuice(group, now, false);
+      if (group.userData.animator) group.userData.animator.update(dt, MOVING_STATES.has(unit.state));
     }
     this.#unitMeshes.forEach(this.#pruneUnit);
     this.#motion.forEach(this.#pruneMotion);
@@ -494,7 +556,8 @@ export class Renderer {
   unitTip(unitId, out) {
     const group = this.#unitMeshes.get(unitId);
     if (!group) return false;
-    const half = this.config.render.layout.unitSize / 2;
+    // A styled fish can be shorter than unitSize on small boards (it must fit the canal): use its real length.
+    const half = (typeof this.factory.unitLength === 'function' ? this.factory.unitLength() : this.config.render.layout.unitSize) / 2;
     const h = group.rotation.y;
     out.set(group.position.x + Math.cos(h) * half, group.position.y, group.position.z - Math.sin(h) * half);
     return true;
@@ -792,6 +855,7 @@ export class Renderer {
   #removeUnit(id, group) {
     this.factory.disposeLabel(group.userData.label);
     this.factory.disposeLabel(group.userData.labelSpare);
+    if (group.userData.animator) group.userData.animator.dispose();
     this.#levelRoot.remove(group);
     this.#unitMeshes.delete(id);
     this.#pickables = this.#pickables.filter((object) => object !== group);
@@ -852,8 +916,33 @@ export class Renderer {
     this.fitCamera();
   }
 
+  /**
+   * One pass, or two with a styled factory: first the GLB models (render.lighting.layer) under the model lights and
+   * render.lighting's tone mapping, on the cleared background; then everything else on layer 0 under the v3 lights and
+   * no tone mapping, over it without clearing, so depth still sorts models against the board and the labels, VFX and
+   * tiles look exactly as in v3.
+   */
   render() {
-    if (this.gl && this.scene && this.camera) this.gl.render(this.scene, this.camera);
+    const { gl, scene, camera } = this;
+    if (!gl || !scene || !camera) return;
+    gl.info.reset();
+    if (!this.#modelPass) {
+      gl.render(scene, camera);
+      return;
+    }
+    gl.autoClear = true;
+    gl.toneMapping = this.#modelToneMapping;
+    gl.toneMappingExposure = this.config.render.lighting.exposure;
+    camera.layers.set(this.#modelLayer);
+    gl.render(scene, camera);
+    const background = scene.background;
+    scene.background = null;
+    gl.autoClear = false;
+    gl.toneMapping = THREE.NoToneMapping;
+    camera.layers.set(0);
+    gl.render(scene, camera);
+    scene.background = background;
+    gl.autoClear = true;
   }
 
   /** Dispose level meshes (blocks, units, slots, tiles) but keep gl/camera for the next level. */
@@ -861,7 +950,10 @@ export class Renderer {
     for (const group of this.#unitMeshes.values()) {
       this.factory.disposeLabel(group.userData.label);
       this.factory.disposeLabel(group.userData.labelSpare);
+      if (group.userData.animator) group.userData.animator.dispose();
     }
+    // Styled track: its InstancedMeshes' instance buffers (the GLB geometry and materials stay cached).
+    if (this.#trackGroup && this.#trackGroup.userData.dispose) this.#trackGroup.userData.dispose();
     if (this.#slotCounter) this.factory.disposeLabel(this.#slotCounter);
     this.#slotCounter = null;
     if (this.#debugGroup) this.#debugGroup.children.forEach((line) => line.geometry.dispose());

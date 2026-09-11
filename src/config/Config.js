@@ -335,6 +335,82 @@ export const Config = Object.freeze({
       }),
     }),
     /**
+     * Styled 3D models (Fish of Fortune, step 1: the fish units and the track). GLBs in public/assets/models, exported
+     * from the artist's .blend files by npm run export:models (tools/blender/export_glb.py, tools/blender/models.json)
+     * and drawn by src/render/StyledFactory.js. A model that fails to load falls back to its primitive.
+     */
+    models: Object.freeze({
+      fish: Object.freeze({
+        url: 'assets/models/fish.glb',
+        /** Size factor on the bounding-box normalisation: a fish is render.layout.unitSize x scale long, nose to tail... */
+        scale: 1,
+        /** ...unless that is too wide for the one-cell canal: its width is then held at canalFit x cellSize. */
+        canalFit: 0.8,
+        /** Yaw (degrees) that turns the model to face +X, every unit's heading axis (the model faces -X). */
+        rotationOffset: 180,
+        /** World units added to the unit's height (render.unitHeight). */
+        yOffset: 0,
+        /** Materials that take the unit's palette colour, through one shared material per colour. */
+        tintMaterialNames: Object.freeze(['M_Fish_Clean']),
+        /**
+         * Tone-map the tinted fish with render.lighting.toneMapping (true) or not (false). Off: a fish's body shows its
+         * palette colour as the blocks do (AgX dulls saturated colours: a #f50f3c fish rendered #b03e3f). The track,
+         * whose colours come from the .blend, stays tone-mapped like Blender's AgX view.
+         */
+        toneMapped: false,
+        /**
+         * Midtone tint (src/render/styled/fishTint.js); luminances are linear. The texture body (bodyLuminance) takes
+         * exactly the palette colour, darker details stay darker, and the tint fades out between highlightStart and
+         * highlightEnd so eye whites and fins stay light. minLuminance lifts black a little; the rim (strength, power)
+         * darkens light fish and lights dark ones at their outline, switching at rimSwitch (palette luminance).
+         */
+        tint: Object.freeze({
+          strength: 1, bodyLuminance: 0.22, highlightStart: 0.35, highlightEnd: 0.75, minLuminance: 0.02,
+          rim: 0.35, rimPower: 2.5, rimSwitch: 0.35, rimLight: 0xffffff, rimDark: 0x0b2233,
+        }),
+        /** glTF clip names: Swim while a unit moves, Idle in the reserve and slots, cross-faded over fadeMs. */
+        animations: Object.freeze({ swim: 'Fish_Swim', idle: 'Fish_Idle', fadeMs: 200, swimSpeed: 1, idleSpeed: 1 }),
+      }),
+      track: Object.freeze({
+        straightUrl: 'assets/models/track_straight.glb',
+        cornerUrl: 'assets/models/track_corner.glb',
+        chevronUrl: 'assets/models/track_chevron.glb',
+        /**
+         * Blender's transmission (water 0.45, outer rim 0.25) as plain transparency: opacity = 1 - transmission x
+         * transmissionWeight. 0.65 matches the Blender reference render (tools/blender/render_reference.py): water
+         * #8eb5c4 vs #94b5bd, rim #88adbb vs #8badb8. At 1 the canal bed shows through too much and both read darker.
+         */
+        transmissionAsOpacity: true,
+        transmissionWeight: 0.65,
+        /**
+         * The entry corner's instance colour (it multiplies that corner's materials; 0xffffff = no tint): a cool,
+         * slightly darker corner like v3's entry tile, about 25 levels darker than the other corners.
+         */
+        entryTint: 0xb4c8dc,
+        /**
+         * Flow chevrons, as in Fish_Rail.blend: one every `spacing` cells along the canal's centre line, moving one
+         * spacing per periodMs in the travel direction (0.6 m every 48 frames at 24 fps); corners rounded to
+         * cornerRadius cells, like the rail's path.
+         */
+        chevrons: Object.freeze({ spacing: 0.481, periodMs: 2000, cornerRadius: 0.382 }),
+      }),
+    }),
+    /**
+     * Lights for the GLB models only. The Renderer draws the models (on `layer`) in a first pass under these lights and
+     * this tone mapping, then everything else in a second pass under render.lights with no tone mapping, so blocks,
+     * tiles, slots and labels look exactly as in v3. Taken from Fish_Rail.blend: its Sun (4.2 W/m², warm, from the
+     * south and above; +Z is the board's south), and its AquaWorld ambient (0.07, 0.1, 0.14) plus its blue fill light
+     * folded into the hemisphere's sky. toneMapping 'agx' matches the AgX view transform both .blend files use; 'none'
+     * turns it off.
+     */
+    lighting: Object.freeze({
+      layer: 1,
+      toneMapping: 'agx',
+      exposure: 1,
+      hemisphere: Object.freeze({ sky: 0xa1bfd9, ground: 0x8198b1, intensity: 1 }),
+      directional: Object.freeze({ color: 0xfffdf6, intensity: 4.2, position: Object.freeze([-0.161, 0.641, 0.751]) }),
+    }),
+    /**
      * Per-level presentation overrides keyed by level id (merged over the defaults above). Level files in
      * src/core/levels stay pure: colour ids there are only numbers, and their meaning lives here.
      */

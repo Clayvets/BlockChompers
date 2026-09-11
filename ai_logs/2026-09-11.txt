@@ -421,3 +421,103 @@ Report:
 - a proposed commit message and the exact commands to commit and create the v3-polish tag.
 Don't run the commit or tag commands yourself.
 
+=== 2026-09-11T07:56:50-05:00 | session 567fdf5c ===
+Task: Fish of Fortune styled version, step 1: 3D ONLY. Export the .blend files to GLB with Blender and replace the primitive units and track with them.
+
+SCOPE (strict):
+- In scope: the fish (GLB) that replaces the triangle units, and the track (GLB) the fish travel on.
+- Out of scope, do NOT touch in this step: any UI. That means the HUD, overlays (win, lose, start screen, settings), buttons, the "N/5" counter, capacity labels, UI animations and CSS, plus the 2D board elements (blocks, empty tiles, slots, reserve cells, background), VFX and SFX. They keep their current v3 look and behavior, and UIManager, VfxFactory and SfxBank must not change. Adding lights must not change how these flat elements look; they keep their current unlit materials.
+- If a 3D change seems to require a UI change, don't make it. List it under "Pending for the UI step" in your report.
+- src/core, the level files and the core tests must not change. Every new value lives in render config. Don't add npm dependencies without asking; GLTFLoader and SkeletonUtils from three/examples/jsm are fine.
+
+Source files: <C:\Users\anama\Downloads\Art>. Never modify, re-save or move the .blend files.
+
+STAGE 1 – Inventory, then STOP for my approval:
+1) Find the Blender executable: check the PATH first, then the usual install folders. If it isn't found, ask me for the path. Report the Blender version.
+2) Write a Python inventory script at tools/blender/inspect_blend.py and run it headless (blender -b file.blend --python script.py). Write scripts as files, never as long inline commands. For each .blend, report:
+   - objects, meshes and polygon counts;
+   - materials, and whether textures are packed or external (flag missing texture paths);
+   - modifiers, animations and armatures;
+   - scale, dimensions, origin position and forward/up axes.
+3) Identify which objects are the fish and which are the track, and whether the track is modular (straight and corner pieces) or a single fixed loop.
+4) Propose:
+   - the export settings;
+   - how the fish gets tinted per unit color (which material changes color);
+   - how the track adapts to each level's size.
+   Then STOP.
+
+STAGE 2 – Export (after approval):
+1) Write a reusable export script at tools/blender/export_glb.py, and add an npm script "export:models" that reads the Blender path from the BLENDER_PATH environment variable.
+2) Export to public/assets/models/ as .glb:
+   - format GLB, apply modifiers, Y-up, embedded textures, only the needed objects;
+   - clean transforms, origin at a sensible pivot (fish center, track piece joints);
+   - include the fish animation if one exists;
+   - no Draco compression.
+   If the track is a single loop, export straight and corner pieces as separate GLBs when the file allows it without editing the .blend. Otherwise report it and ask me.
+3) Validate every GLB with a Node script, without new dependencies: glTF magic and version 2, parse the JSON chunk, and report meshes, materials, textures, animations, bounding box and file size.
+
+STAGE 3 – 3D integration:
+1) Asset loading: add an AssetLoader in src/render/assets/ that preloads every GLB once and caches it. main.js awaits it before the existing start screen appears. Add no loading screen or any other new UI; if a load fails, log a clear console error naming the file.
+2) Add StyledFactory.js with the same API as PrimitiveFactory, overriding only unit and track creation. Every other element delegates to PrimitiveFactory. Swap it in at the composition root, and leave PrimitiveFactory untouched.
+3) Fish units:
+   - clone per unit, sharing geometry; use SkeletonUtils.clone if the model is skinned;
+   - normalize size to render.layout.unitSize from the bounding box;
+   - add render.models.fish {url, scale, rotationOffset, yOffset, tintMaterialNames};
+   - tint per palette color with one shared material per color, not per unit;
+   - the fish faces its direction of travel using the existing rotation damping; if it has a swim animation, play it with an AnimationMixer that follows pause and time scale;
+   - the existing labels, VFX, death pop and slot parking must keep working unchanged with the fish.
+4) Track:
+   - the logical track path in core doesn't change, and the visual pieces must line up exactly with the lanes at every level's cellSize;
+   - put the piece placement math in a pure function src/render/layout/computeTrackPieces.js (no three, no DOM) that returns the position, rotation and type of each piece from the layout and level size;
+   - render straight pieces with an InstancedMesh built from the GLB geometry, and corners the same way.
+5) Lighting: add hemisphere and directional lights in render config (render.lighting) that affect only the GLB meshes. Set outputColorSpace and textures to sRGB. Keep the top-down OrthographicCamera; if the models don't read well from above, report it and propose a small tilt without applying it.
+6) Dispose clones and instances on restart and level change, and keep the cached GLB assets alive across levels.
+
+Tests (node, no Three.js):
+- computeTrackPieces covers every lane with no gaps or overlaps, with corners in the 4 corners, for all levels.
+- The size normalization math.
+- The GLB validation script passes for every exported file.
+- no-render-imports.test.js, all core tests and the build stay green.
+
+Check: play Level 1, Panda and Carrot.
+- Fish follow the track, are tinted correctly and face their direction.
+- The track lines up with the lanes on every level.
+- The UI and 2D elements look exactly as in v3.
+- Report FPS and draw calls on Carrot with 5 fish moving, compared to the v3 numbers, and confirm renderer.info.memory stays stable after 5 restarts.
+
+README: start a "Styled – Fish of Fortune" section with the asset pipeline (source .blend, export command, export settings, output folder) and the new config keys. Don't change the v1, v2 or v3 sections.
+
+Report the export settings used, the GLB stats, any issues found in the .blend files, the "Pending for the UI step" list, and a proposed commit message.
+=== 2026-09-11T08:19:31-05:00 | session 567fdf5c ===
+Decisions approved. Proceed with Stage 2 (export) and Stage 3 (3D integration). The goal of this step is to have the 3D art (fish and track) fully implemented in-game, looking as close as possible to the Blender files.
+
+1) Done
+
+2) Track pieces: OK to cut them in the export script, as long as it's non-destructive and reproducible:
+- the .blend files are never modified, and running "npm run export:models" regenerates the same pieces;
+- add a test that places straight and corner pieces side by side and checks the joints line up with no gaps or overlaps;
+- document the cut in the README asset pipeline section.
+
+
+3) Cross-section: canal = 1 cell with no inner rim. The fish must fit inside the canal at every level's cellSize; report the fish-to-canal width ratio on Level 1, Panda and Carrot.
+
+4) Tint: midtone shader tint now.
+- Use one shared material per palette color, patching MeshStandardMaterial with onBeforeCompile, so highlights, shadows and texture detail survive.
+- Put the strength in render config (render.models.fish.tint).
+- The palettes include black (#0A0A0A) and white (#FFFFFF): black and white fish must stay readable against the track and the background. If they don't, add a minimum luminance or rim value in config and report it.
+- If the eyes get tinted, list the eye material split under "Pending"; don't wait for it.
+
+5) Export details:
+- Fish textures at 512²: yes. The originals stay in the .blend, and the README records the size used.
+- Water colours: yes, flatten them, since Blender procedural nodes don't export to glTF. Sample the colours from the Blender material so they match the render.
+- Chevrons: keep them if the straight pieces are already oriented along the travel direction through their instance rotation, for both cw and ccw. If that complicates the corners, leave them out and list them under "Pending".
+
+6) Entry corner: tint the entry corner piece through its instance colour. Keep it subtle, with the colour in render config, so the entry point stays readable as in v3.
+
+7) Scope: correct. The ring guide tiles are the primitive track to replace. Reserve tiles, slots, blocks, empty tiles, background, VFX, SFX and all UI stay exactly as in v3.
+
+Visual check before reporting:
+- render a reference image of the fish and a track piece from Blender headless, using the same top-down view;
+- compare it with the in-game result on Level 1, Panda and Carrot;
+- report any visible difference in colour, scale or shading.
+

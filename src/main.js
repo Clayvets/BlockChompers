@@ -8,6 +8,8 @@ import { CueBus } from './app/Cues.js';
 import { pickDebugLevel } from './debug/levelParam.js';
 import { DebugPanel, layoutDebugEntries, statsDebugEntries } from './debug/DebugPanel.js';
 import { Renderer } from './render/Renderer.js';
+import { StyledFactory } from './render/StyledFactory.js';
+import { AssetLoader } from './render/assets/AssetLoader.js';
 import { VfxFactory } from './render/vfx/VfxFactory.js';
 import { ConfettiLayer } from './render/vfx/ConfettiLayer.js';
 import { AudioManager } from './audio/AudioManager.js';
@@ -43,7 +45,11 @@ const levelColors = (levelId) => {
   return Object.values({ ...palette, ...((styles[levelId] || {}).palette || {}) });
 };
 
-const renderer = new Renderer({ canvas, config, cues });
+// Fish of Fortune look: every GLB is loaded once before the start screen appears (no loading screen; a file that fails
+// logs an error and its primitive is used instead). StyledFactory replaces only the units and the track.
+const assets = new AssetLoader();
+await assets.preload(StyledFactory.assetUrls(config));
+const renderer = new Renderer({ canvas, config, cues, factory: new StyledFactory(config, assets) });
 const confetti = new ConfettiLayer({ canvas: fxCanvas, config, factory: new VfxFactory(config) });
 const audio = new AudioManager({ config, eventBus, cues });
 const input = new InputManager({ canvas, renderer, gameManager: game });
@@ -144,6 +150,7 @@ if (import.meta.hot) {
     if (debugPanel) debugPanel.unmount();
     audio.dispose();
     confetti.dispose();
+    assets.dispose();
     renderer.dispose();
   });
 }
