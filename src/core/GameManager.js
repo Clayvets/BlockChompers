@@ -4,6 +4,7 @@ import { Track } from './Track.js';
 import { UnitState } from './Unit.js';
 import { Events, RejectReason, LoseReason } from './Events.js';
 import { findValidMoves } from './Simulator.js';
+import { ProgressManager } from './ProgressManager.js';
 
 export const GamePhase = Object.freeze({ IDLE: 'idle', PLAYING: 'playing', WON: 'won', LOST: 'lost' });
 
@@ -11,7 +12,8 @@ export const GamePhase = Object.freeze({ IDLE: 'idle', PLAYING: 'playing', WON: 
  * Orchestrator. The ONLY class that mutates game state in response to time (step) or commands
  * (activateUnit). Emits domain events; exposes a plain snapshot.
  *
- *   commands in : activateUnit(unitId) -> { ok, reason }, never throws; its events emit at once
+ *   commands in : activateUnit, pause, resume, restartLevel, continueToNextLevel -> { ok, reason };
+ *                 activateUnit never throws; command events emit at once
  *   state out   : getSnapshot() every frame (structure)
  *   events out  : collected during step() and flushed after it (effects)
  *
@@ -27,9 +29,16 @@ export class GameManager {
   #movesCache = { gridVersion: -1, inventoryVersion: -1, moves: [] };
 
   /**
-   * @param {{ config: object, eventBus: import('./EventBus.js').EventBus, grid?: GridManager, inventory?: InventoryManager }} deps
+   * @param {{ config: object, eventBus: import('./EventBus.js').EventBus, grid?: GridManager, inventory?: InventoryManager,
+   *           progress?: ProgressManager }} deps
    */
-  constructor({ config, eventBus, grid = new GridManager({ config }), inventory = new InventoryManager({ config }) }) {
+  constructor({
+    config,
+    eventBus,
+    grid = new GridManager({ config }),
+    inventory = new InventoryManager({ config }),
+    progress = new ProgressManager({ config }),
+  }) {
     this.config = config;
     this.eventBus = eventBus;
     this.grid = grid;
@@ -39,6 +48,10 @@ export class GameManager {
     this.phase = GamePhase.IDLE;
     this.level = null;
     this.stepCount = 0;
+    /** Money and level progression (pure; see ProgressManager). */
+    this.progress = progress;
+    /** Simulation frozen by pause(); cleared by resume() and by every loadLevel. */
+    this.paused = false;
   }
 
   /**
@@ -107,20 +120,21 @@ export class GameManager {
     this.stepCount = 0;
     this.#accumulator = 0;
     this.#pendingEvents = [];
+    this.paused = false;
     this.#movesCache = { gridVersion: -1, inventoryVersion: -1, moves: [] };
 
     this.#setPhase(GamePhase.PLAYING);
     this.#emit(Events.LEVEL_LOADED, { snapshot: this.getSnapshot() });
   }
 
-  /** Reload the current level from scratch. */
+  /** Reload the current level from scratch (no command checks; see restartLevel). */
   reset() {
     if (this.level) this.loadLevel(this.level);
   }
 
   /** Real-time entry point: clamp, accumulate, run whole fixed steps. */
   update(dtSeconds) {
-    if (!(dtSeconds > 0)) return;
+    if (!(dtSeconds > 0) || this.paused) return;
     const { fixedStep, maxFrameDt, epsilon } = this.config.timing;
     this.#accumulator += Math.min(dtSeconds, maxFrameDt);
     while (this.#accumulator >= fixedStep - epsilon) {
@@ -137,7 +151,7 @@ export class GameManager {
   step(n = 1) {
     if (this.#stepping) throw new Error('GameManager.step: re-entrant call from an event listener');
     const flushed = [];
-    for (let i = 0; i < n && this.phase === GamePhase.PLAYING; i += 1) {
+    for (let i = 0; i < n && this.phase === GamePhase.PLAYING && !this.paused; i += 1) {
       this.#stepping = true;
       try {
         this.stepCount += 1;
@@ -179,6 +193,7 @@ export class GameManager {
   /** Same checks as activateUnit without side effects. */
   canActivate(unitId) {
     if (this.phase !== GamePhase.PLAYING) return { ok: false, reason: RejectReason.NOT_PLAYING };
+    if (this.paused) return { ok: false, reason: RejectReason.PAUSED };
     const unit = this.inventory.getUnit(unitId);
     if (!unit) return { ok: false, reason: RejectReason.UNKNOWN_UNIT };
     if (unit.state !== UnitState.RESERVE) return { ok: false, reason: RejectReason.NOT_IN_RESERVE };
@@ -187,6 +202,63 @@ export class GameManager {
       return { ok: false, reason: RejectReason.NO_TARGET };
     }
     return { ok: true };
+  }
+
+  /**
+   * Freeze the simulation (settings panel). update() and step() do nothing and activateUnit is rejected
+   * with PAUSED until resume() or the next loadLevel. Only a level in PLAYING can be paused.
+   * @returns {{ ok: boolean, reason?: string }}
+   */
+  pause() {
+    if (this.phase !== GamePhase.PLAYING) return { ok: false, reason: RejectReason.NOT_PLAYING };
+    if (!this.paused) {
+      this.paused = true;
+      this.#accumulator = 0;
+      this.#emit(Events.GAME_PAUSED, {});
+    }
+    return { ok: true };
+  }
+
+  /** Unfreeze the simulation. Idempotent. @returns {{ ok: boolean }} */
+  resume() {
+    if (this.paused) {
+      this.paused = false;
+      this.#emit(Events.GAME_RESUMED, {});
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Reload the current level from scratch (settings "Restart level", lose card "Retry"). Pays nothing and
+   * keeps the level number; an unclaimed win is forfeited.
+   * @returns {{ ok: boolean, reason?: string }}
+   */
+  restartLevel() {
+    if (!this.level) return { ok: false, reason: RejectReason.NO_LEVEL };
+    this.reset();
+    return { ok: true };
+  }
+
+  /**
+   * Win card "Continue": pay the level reward once, advance the progression and load the next level.
+   * Only valid in WON; the phase leaves WON immediately, so a second call is rejected and pays nothing.
+   * Throws (before paying) if the next level fails validateLevel.
+   * @returns {{ ok: boolean, reason?: string, reward?: number, money?: number, levelNumber?: number }}
+   */
+  continueToNextLevel() {
+    if (this.phase !== GamePhase.WON) return { ok: false, reason: RejectReason.NOT_WON };
+    const next = this.progress.nextLevel();
+    if (!next) return { ok: false, reason: RejectReason.NO_LEVELS };
+    const check = GameManager.validateLevel(next, this.config);
+    if (!check.ok) throw new Error(`GameManager.continueToNextLevel(${next.id}): ${check.errors.join('; ')}`);
+
+    const paid = this.progress.completeLevel();
+    if (!paid.ok) return { ok: false, reason: RejectReason.NOT_WON };
+    this.#emit(Events.MONEY_CHANGED, { money: paid.money, delta: paid.reward, levelNumber: this.progress.levelNumber });
+    const { level, levelNumber } = this.progress.advance();
+    this.#emit(Events.LEVEL_ADVANCED, { levelNumber, levelId: level.id });
+    this.loadLevel(level);
+    return { ok: true, reward: paid.reward, money: paid.money, levelNumber };
   }
 
   /** Reserve unit ids whose activation would consume at least one block (Simulator dry run, memoised). */
@@ -242,11 +314,13 @@ export class GameManager {
     return {
       phase: this.phase,
       stepCount: this.stepCount,
+      paused: this.paused,
       grid: this.grid.toState(),
       track,
       units,
       slots: inventory.slots,
       inventory: { reserveCols: inventory.reserveCols, reserveRows: inventory.reserveRows, version: inventory.version },
+      progress: this.progress.getState(),
     };
   }
 

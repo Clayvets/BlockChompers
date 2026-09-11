@@ -50,3 +50,13 @@ Fix: in every level, the total capacity of the units of each color must equal ex
 Add tests: validation rejects capacity > blocks and capacity < blocks per color, accepts an exact match, and every level in src/core/levels passes. Don't change the parking or slot rules, and keep npm test green.
 Report which levels you changed and propose a commit message.
 
+=== 2026-09-10T22:55:39-05:00 | session 567fdf5c ===
+Task: replace the current debug HUD (the "Blocks left / Slots" text) with a minimal UI. v1 rule: simple shapes and flat overlays only, meaning plain DOM elements, solid colors, system font, and no images, icon libraries or new dependencies.
+Top bar (HUD): a settings button in the top-left corner, the current level ("Level 1") centered, and the accumulated money in the top-right corner.
+Settings button: opens a small flat panel that pauses the simulation, with "Resume" and "Restart level" buttons.
+Win overlay: when LEVEL_WON fires (after the existing win delay), dim the screen and show a centered card with "Congratulations!" and a "Continue +$X" button. Clicking it adds the reward to the money, updates the HUD and loads the next level.
+Lose overlay: when LEVEL_LOST fires, for either loss reason, show a centered card with "Out of space" and a "Retry" button that restarts the same level.
+Architecture: money and level progression live in a pure core module (no DOM, no three) exposed through getState() and events. The reward per level and all UI colors, sizes and timings live in Config.js. UIManager only renders state and turns button clicks into GameManager commands. Overlays block input to the game underneath.
+Add headless tests for the money and progression logic: the reward is added once per win, retry gives no reward, and loading the next level works. Keep npm test green and the build clean.
+Report the decisions you made (for example, what happens after the last level) and propose a commit message.
+

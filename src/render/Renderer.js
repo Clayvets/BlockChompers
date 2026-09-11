@@ -37,6 +37,8 @@ export class Renderer {
   #layout = null;
   #pickables = [];
   #size = { width: 1, height: 1 };
+  /** Screen pixels covered by DOM chrome (HUD bar); fitCamera keeps the board out of them. */
+  #insets = { top: 0, bottom: 0 };
 
   /**
    * @param {{ canvas: HTMLCanvasElement, config: object, factory?: PrimitiveFactory }} deps
@@ -94,16 +96,30 @@ export class Renderer {
   fitCamera(bounds = this.#layout && this.#layout.bounds) {
     if (!this.camera || !bounds) return;
     const { cellSize, camera: cam } = this.config.render;
-    const aspect = this.#size.width / this.#size.height;
+    const { width, height } = this.#size;
+    const usable = Math.max(1, height - this.#insets.top - this.#insets.bottom);
     const halfW0 = ((bounds.maxX - bounds.minX) * cellSize) / 2 + cam.padding;
     const halfH0 = ((bounds.maxY - bounds.minY) * cellSize) / 2 + cam.padding;
-    const halfH = Math.max(halfH0, halfW0 / aspect);
-    const halfW = halfH * aspect;
+    const usableHalfH = Math.max(halfH0, (halfW0 * usable) / width);
+    const worldPerPx = (2 * usableHalfH) / usable;
+    const halfW = (width * worldPerPx) / 2;
+    const halfH = (height * worldPerPx) / 2;
     Object.assign(this.camera, { left: -halfW, right: halfW, top: halfH, bottom: -halfH });
+    // Centre the bounds in the band between the insets: screen-up is world -z.
+    const shift = ((this.#insets.top - this.#insets.bottom) / 2) * worldPerPx;
     const centre = this.cellToWorld((bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2);
-    this.camera.position.set(centre.x, cam.height, centre.z);
-    this.camera.lookAt(centre.x, 0, centre.z);
+    this.camera.position.set(centre.x, cam.height, centre.z - shift);
+    this.camera.lookAt(centre.x, 0, centre.z - shift);
     this.camera.updateProjectionMatrix();
+  }
+
+  /**
+   * Reserve screen pixels for DOM chrome (the HUD bar). main.js passes Config.ui.sizes.barHeight as top.
+   * @param {{ top?: number, bottom?: number }} insets
+   */
+  setViewportInsets({ top = 0, bottom = 0 } = {}) {
+    this.#insets = { top, bottom };
+    this.fitCamera();
   }
 
   /** Level shape -> slot row, reserve grid and camera bounds, all in cell units. */
@@ -247,8 +263,13 @@ export class Renderer {
       if (unit.state === UnitState.DEAD) continue;
       alive.add(unit.id);
       let group = this.#unitMeshes.get(unit.id);
+      if (group && group.userData.color !== unit.color) {
+        this.#removeUnit(unit.id, group); // same id, different level: rebuild in the new colour
+        group = undefined;
+      }
       if (!group) {
         group = this.factory.unit(unit.color, unit.id);
+        group.userData.color = unit.color;
         const sprite = this.factory.label(String(unit.capacity));
         sprite.position.y = label.yOffset;
         group.add(sprite);

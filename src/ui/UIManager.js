@@ -1,19 +1,26 @@
 import { Events } from '../core/Events.js';
+import { GamePhase } from '../core/GameManager.js';
 
-const toCss = (hex) => `#${hex.toString(16).padStart(6, '0')}`;
+const kebab = (key) => key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
 
 /**
- * DOM overlay (HUD, win/lose panel, restart). Reads snapshots for numbers, listens to
- * LEVEL_WON / LEVEL_LOST / LEVEL_LOADED for the overlay. Never touches Three.js.
+ * Minimal flat UI (v1: plain DOM, solid colours, system font; no images, icon fonts or dependencies).
+ *   bar      -- settings button (left), "Level N" (centre), money (right)
+ *   settings -- modal panel shown while the simulation is paused: Resume / Restart level
+ *   result   -- modal card after LEVEL_WON ("Congratulations!" + "Continue +$X") or LEVEL_LOST ("Out of space" + "Retry")
  *
- * Copy and colours come from Config.ui (and slot colours from Config.render.slotColors); they are
- * published as CSS custom properties on `root`, and index.html's stylesheet only does layout.
+ * UIManager keeps no game state: update(snapshot) renders it and clicks become GameManager commands. The result
+ * card waits Config.ui.timing.{win,lose}OverlayDelay after the event so the last move stays visible. Modals cover
+ * the whole screen with pointer events on, so the game underneath gets no input. Colours, sizes and timings come
+ * from Config.ui and are published as CSS custom properties (--ui-color-*, --ui-size-*, --ui-fade) for the
+ * layout-only stylesheet in index.html.
  */
 export class UIManager {
-  #unbind = null;
-  #onRestart = null;
   #els = null;
-  #shown = { remaining: null, slots: null };
+  #unbind = null;
+  #timer = null;
+  #resultKind = null;
+  #shown = {};
 
   /** @param {{ root: HTMLElement, eventBus: import('../core/EventBus.js').EventBus, gameManager: object, config?: object }} deps */
   constructor({ root, eventBus, gameManager, config = gameManager.config }) {
@@ -23,60 +30,37 @@ export class UIManager {
     this.config = config;
   }
 
-  /** Build the HUD/overlay elements inside root and subscribe to the level events. */
+  /** Build the bar and the two modals inside root and subscribe to the level events. */
   mount() {
     if (this.#els) return;
-    const { ui, render } = this.config;
-    const vars = {
-      '--ui-text': ui.colors.text,
-      '--ui-panel': ui.colors.panel,
-      '--ui-backdrop': ui.colors.backdrop,
-      '--ui-won': ui.colors.won,
-      '--ui-lost': ui.colors.lost,
-      '--ui-button': ui.colors.button,
-      '--ui-button-text': ui.colors.buttonText,
-      '--slot-free': toCss(render.slotColors.free),
-      '--slot-occupied': toCss(render.slotColors.occupied),
-      '--slot-blocked': toCss(render.slotColors.blocked),
-    };
-    for (const [name, value] of Object.entries(vars)) this.root.style.setProperty(name, value);
+    const { text } = this.config.ui;
+    this.#publishTokens();
 
-    const make = (tag, className, text) => {
-      const node = this.root.ownerDocument.createElement(tag);
-      node.className = className;
-      if (text !== undefined) node.textContent = text;
-      return node;
-    };
-    const hud = make('div', 'hud');
-    const blocksValue = make('span', 'hud-value', '0');
-    const dots = make('span', 'hud-dots');
-    const blocksRow = make('div', 'hud-row');
-    blocksRow.append(make('span', 'hud-label', `${ui.text.blocksLeft}:`), blocksValue);
-    const slotsRow = make('div', 'hud-row');
-    slotsRow.append(make('span', 'hud-label', `${ui.text.slots}:`), dots);
-    hud.append(blocksRow, slotsRow);
+    const bar = this.#make('div', 'bar');
+    const settingsButton = this.#make('button', 'icon-button');
+    settingsButton.type = 'button';
+    settingsButton.title = text.settings;
+    settingsButton.setAttribute('aria-label', text.settings);
+    for (let i = 0; i < 3; i += 1) settingsButton.append(this.#make('span', 'icon-bar'));
+    settingsButton.addEventListener('click', () => this.gameManager.pause());
+    const levelLabel = this.#make('div', 'bar-level');
+    const moneyLabel = this.#make('div', 'bar-money');
+    bar.append(settingsButton, levelLabel, moneyLabel);
 
-    const overlay = make('div', 'overlay');
-    overlay.hidden = true;
-    const card = make('div', 'overlay-card');
-    const title = make('h2', 'overlay-title');
-    const reason = make('p', 'overlay-reason');
-    const button = make('button', 'overlay-button', ui.text.restart);
-    button.type = 'button';
-    button.addEventListener('click', () => {
-      if (this.#onRestart) this.#onRestart();
-    });
-    card.append(title, reason, button);
-    overlay.append(card);
+    const settings = this.#modal(text.paused, [
+      ['button', text.resume, () => this.gameManager.resume()],
+      ['button button-secondary', text.restartLevel, () => this.gameManager.restartLevel()],
+    ]);
+    const result = this.#modal('', [['button', '', () => this.#onResultAction()]]);
 
-    this.root.append(hud, overlay);
-    this.#els = { hud, blocksValue, dots, overlay, title, reason, button, make };
-    this.#shown = { remaining: null, slots: null };
+    this.root.append(bar, settings.root, result.root);
+    this.#els = { bar, settingsButton, levelLabel, moneyLabel, settings, result };
+    this.#shown = {};
 
     const offs = [
-      this.eventBus.on(Events.LEVEL_WON, () => this.showWin()),
-      this.eventBus.on(Events.LEVEL_LOST, ({ reason: why }) => this.showLose(why)),
-      this.eventBus.on(Events.LEVEL_LOADED, () => this.hideOverlay()),
+      this.eventBus.on(Events.LEVEL_WON, () => this.#schedule('won')),
+      this.eventBus.on(Events.LEVEL_LOST, () => this.#schedule('lost')),
+      this.eventBus.on(Events.LEVEL_LOADED, () => this.hideResult()),
     ];
     this.#unbind = () => offs.forEach((off) => off());
   }
@@ -84,57 +68,113 @@ export class UIManager {
   unmount() {
     if (this.#unbind) this.#unbind();
     this.#unbind = null;
+    this.hideResult();
     if (this.#els) {
-      this.#els.hud.remove();
-      this.#els.overlay.remove();
+      const { bar, settings, result } = this.#els;
+      bar.remove();
+      settings.root.remove();
+      result.root.remove();
     }
     this.#els = null;
   }
 
-  /** Per-frame HUD refresh; touches the DOM only when a value changed. */
+  /** Per-frame render from the snapshot; touches the DOM only when a shown value changed. */
   update(snapshot) {
     if (!this.#els || !snapshot) return;
-    const { remaining } = snapshot.grid;
-    if (remaining !== this.#shown.remaining) {
-      this.#els.blocksValue.textContent = String(remaining);
-      this.#shown.remaining = remaining;
+    const { text } = this.config.ui;
+    const { levelLabel, moneyLabel, settings, settingsButton } = this.#els;
+    const { levelNumber, money } = snapshot.progress;
+    if (this.#changed('levelNumber', levelNumber)) levelLabel.textContent = `${text.level} ${levelNumber}`;
+    if (this.#changed('money', money)) moneyLabel.textContent = `${text.currency}${money}`;
+    if (this.#changed('paused', snapshot.paused)) {
+      settings.root.hidden = !snapshot.paused;
+      if (snapshot.paused) settings.buttons[0].focus();
     }
-    const slotsKey = snapshot.slots.map((slot) => slot.status).join(',');
-    if (slotsKey !== this.#shown.slots) {
-      this.#els.dots.replaceChildren(...snapshot.slots.map((slot) => {
-        const dot = this.#els.make('span', `dot dot-${slot.status}`);
-        dot.title = `${slot.index + 1}: ${slot.status}`;
-        return dot;
-      }));
-      this.#shown.slots = slotsKey;
-    }
+    const playing = snapshot.phase === GamePhase.PLAYING;
+    if (this.#changed('playing', playing)) settingsButton.disabled = !playing;
   }
 
+  /** Win card: title and a Continue button showing the reward from the progression state. */
   showWin() {
-    this.#showOverlay('won', this.config.ui.text.won, '');
+    const { text } = this.config.ui;
+    const { reward } = this.gameManager.getSnapshot().progress;
+    this.#showResult('won', text.won, `${text.continue} +${text.currency}${reward}`);
   }
 
-  showLose(reason) {
-    this.#showOverlay('lost', this.config.ui.text.lost, this.config.ui.loseReasons[reason] || '');
+  /** Lose card, the same for every loss reason. */
+  showLose() {
+    const { text } = this.config.ui;
+    this.#showResult('lost', text.lost, text.retry);
   }
 
-  hideOverlay() {
-    if (this.#els) this.#els.overlay.hidden = true;
+  hideResult() {
+    clearTimeout(this.#timer);
+    this.#timer = null;
+    this.#resultKind = null;
+    if (this.#els) this.#els.result.root.hidden = true;
   }
 
-  /** Register the restart callback (main.js passes () => game.reset()). */
-  onRestart(callback) {
-    this.#onRestart = callback;
+  #schedule(kind) {
+    const { winOverlayDelay, loseOverlayDelay } = this.config.ui.timing;
+    clearTimeout(this.#timer);
+    const delay = (kind === 'won' ? winOverlayDelay : loseOverlayDelay) * 1000;
+    this.#timer = setTimeout(() => (kind === 'won' ? this.showWin() : this.showLose()), delay);
   }
 
-  #showOverlay(result, titleText, reasonText) {
+  #showResult(kind, titleText, actionText) {
     if (!this.#els) return;
-    const { overlay, title, reason, button } = this.#els;
-    overlay.dataset.result = result;
-    title.textContent = titleText;
-    reason.textContent = reasonText;
-    reason.hidden = !reasonText;
-    overlay.hidden = false;
-    button.focus();
+    const { result } = this.#els;
+    this.#resultKind = kind;
+    result.root.dataset.result = kind;
+    result.title.textContent = titleText;
+    result.buttons[0].textContent = actionText;
+    result.root.hidden = false;
+    result.buttons[0].focus();
+  }
+
+  /** Win: pay + next level. Lose: replay. The card hides on the LEVEL_LOADED that follows. */
+  #onResultAction() {
+    if (this.#resultKind === 'won') this.gameManager.continueToNextLevel();
+    else if (this.#resultKind === 'lost') this.gameManager.restartLevel();
+  }
+
+  #changed(key, value) {
+    if (this.#shown[key] === value) return false;
+    this.#shown[key] = value;
+    return true;
+  }
+
+  #make(tag, className, textContent) {
+    const node = this.root.ownerDocument.createElement(tag);
+    node.className = className;
+    if (textContent !== undefined) node.textContent = textContent;
+    return node;
+  }
+
+  /** Full-screen modal with a centred card: title + buttons. Hidden until shown. */
+  #modal(titleText, buttonSpecs) {
+    const root = this.#make('div', 'modal');
+    root.hidden = true;
+    const card = this.#make('div', 'card');
+    const title = this.#make('h2', 'card-title', titleText);
+    const buttons = buttonSpecs.map(([className, label, onClick]) => {
+      const button = this.#make('button', className, label);
+      button.type = 'button';
+      button.addEventListener('click', onClick);
+      return button;
+    });
+    card.append(title, ...buttons);
+    root.append(card);
+    return { root, title, buttons };
+  }
+
+  /** Config.ui -> CSS custom properties on root (colours as-is, sizes in px, fade in s). */
+  #publishTokens() {
+    const { colors, sizes, timing, disabledOpacity } = this.config.ui;
+    const { style } = this.root;
+    for (const [key, value] of Object.entries(colors)) style.setProperty(`--ui-color-${kebab(key)}`, value);
+    for (const [key, value] of Object.entries(sizes)) style.setProperty(`--ui-size-${kebab(key)}`, `${value}px`);
+    style.setProperty('--ui-fade', `${timing.fade}s`);
+    style.setProperty('--ui-disabled-opacity', String(disabledOpacity));
   }
 }

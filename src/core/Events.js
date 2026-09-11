@@ -26,19 +26,35 @@ export const Events = Object.freeze({
   SLOT_BLOCKED: 'slot:blocked',
   /** { unitId, reason } -- see RejectReason */
   MOVE_REJECTED: 'move:rejected',
+  /** {} -- simulation frozen by GameManager.pause(); LEVEL_LOADED also implies unpaused */
+  GAME_PAUSED: 'game:paused',
+  /** {} */
+  GAME_RESUMED: 'game:resumed',
+  /** { money, delta, levelNumber } -- the won level's reward was paid (GameManager.continueToNextLevel) */
+  MONEY_CHANGED: 'money:changed',
+  /** { levelNumber, levelId } -- progression moved to the next level; LEVEL_LOADED follows */
+  LEVEL_ADVANCED: 'level:advanced',
   /** { stepCount } */
   LEVEL_WON: 'level:won',
   /** { reason } -- see LoseReason */
   LEVEL_LOST: 'level:lost',
 });
 
-/** Reasons a command can be rejected (payload of MOVE_REJECTED / return of canActivate). */
+/** Reasons a command is rejected: MOVE_REJECTED payload for activateUnit, `reason` in every command result. */
 export const RejectReason = Object.freeze({
   NOT_PLAYING: 'not-playing',
   UNKNOWN_UNIT: 'unknown-unit',
   NOT_IN_RESERVE: 'not-in-reserve',
   NO_FREE_SLOT: 'no-free-slot',
   NO_TARGET: 'no-target',
+  /** activateUnit while the simulation is paused */
+  PAUSED: 'paused',
+  /** continueToNextLevel before the level is won (or after the reward was taken) */
+  NOT_WON: 'not-won',
+  /** restartLevel before any level was loaded */
+  NO_LEVEL: 'no-level',
+  /** continueToNextLevel with an empty progression list */
+  NO_LEVELS: 'no-levels',
 });
 
 /** Reasons a level is lost (payload of LEVEL_LOST). */

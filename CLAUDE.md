@@ -25,14 +25,14 @@ npx vitest run -t "outermost block"             # by test name
 
 **Layering rule:** `src/core/**` and `src/config/**` are pure -- no `three`, no DOM, no clock, no randomness. `tests/architecture/no-render-imports.test.js` fails if that is violated, so any test run catches it.
 
-- `src/config/Config.js` -- the single frozen config. Core reads `grid/track/units/inventory/rules/timing`; `render` and `debug` are only for `src/render` and `src/ui`. `createConfig(overrides)` deep-merges for tests.
-- `src/core/` -- `GameManager` orchestrates `GridManager` (matrix), `InventoryManager` (units, 4xN reserve, 5 active slots) and `Track` (perimeter math). `Unit` is dumb data. `Simulator.js` holds pure dry-runs over a snapshot. `createGame.js` is the one wiring point used by both `main.js` and the tests. `Sides.js` is the single source of truth for inward directions.
+- `src/config/Config.js` -- the single frozen config. Core reads `grid/track/units/inventory/rules/timing/progression`; `render`, `ui` and `debug` are only for `src/render` and `src/ui`. `createConfig(overrides)` deep-merges for tests.
+- `src/core/` -- `GameManager` orchestrates `GridManager` (matrix), `InventoryManager` (units, 4xN reserve, 5 active slots) and `Track` (perimeter math). `ProgressManager` holds money and level progression (`getState()`). `Unit` is dumb data. `Simulator.js` holds pure dry-runs over a snapshot. `createGame.js` is the one wiring point used by both `main.js` and the tests. `Sides.js` is the single source of truth for inward directions.
 - `src/render/` -- `Renderer` is the Three.js bridge (strictly top-down `OrthographicCamera`); `PrimitiveFactory` is the reskin seam: swap it (same interface) to change the look.
-- `src/input/InputManager.js` -- pointer -> `renderer.pick` -> `game.activateUnit`. `src/ui/UIManager.js` -- DOM overlay in `#ui-root`.
+- `src/input/InputManager.js` -- pointer -> `renderer.pick` -> `game.activateUnit`. `src/ui/UIManager.js` -- flat DOM UI in `#ui-root`: top bar (settings, "Level N", money), pause panel, win/lose cards. It renders snapshots and turns clicks into GameManager commands; it keeps no game state.
 - `src/main.js` -- composition root and rAF loop: `game.update(dt)` -> `getSnapshot()` -> `renderer.sync` -> `ui.update` -> `renderer.render`.
 
 **Contracts**
-- Commands in: `activateUnit(id)` returns `{ ok, reason }` and never throws. State out: `getSnapshot()` is plain JSON in cell units with `grid.version` / `inventory.version` counters. Events out (`src/core/Events.js`) are flushed after each `step()` and are garnish only -- `Renderer.sync(snapshot)` alone must draw a correct picture.
+- Commands in: `activateUnit`, `pause`, `resume`, `restartLevel`, `continueToNextLevel` return `{ ok, reason }` (`activateUnit` never throws). `continueToNextLevel` is the only way to earn money: valid only in WON, pays `progression.rewardPerLevel` once, then loads the next level. Level content loops after the last level while the level number keeps counting. Money is not persisted across page reloads. State out: `getSnapshot()` is plain JSON in cell units with `grid.version` / `inventory.version` counters, plus `paused` and `progress`. Events out (`src/core/Events.js`) are flushed after each `step()` and are garnish only -- `Renderer.sync(snapshot)` alone must draw a correct picture.
 - Fixed timestep: `update(dt)` accumulates into `step()`. `tests/helpers/createTestGame.js` sets speed 1 and fixedStep 1 so one `step()` is one cell of travel.
 - Coordinates: `matrix[row][col]`, row 0 = top (N), col 0 = left (W); cell-unit origin at the grid's top-left, y down. Only the renderer multiplies by `render.cellSize`.
 - Scanning is discrete: `Track.lanesCrossed(tFrom, tTo)` is the only scan trigger, so a lane is scanned exactly once per lap.
@@ -53,5 +53,5 @@ npx vitest run -t "outermost block"             # by test name
 
 - Code, identifiers, comments and the HTML `lang` are English. The project started in Spanish; rename any leftover Spanish names.
 - The canvas id `#canvas-game` and the overlay id `#ui-root` are shared between `index.html` and `src/main.js`; rename both or neither.
-- Every tunable lives in `Config.js`, including render layout, colours and UI copy (`render`, `ui`). The stylesheet in `index.html` is layout-only; `UIManager` publishes the colours as CSS custom properties on `#ui-root`.
+- Every tunable lives in `Config.js`, including render layout and all UI copy, colours, sizes (px) and timings (`render`, `ui`). The stylesheet in `index.html` is layout-only; `UIManager` publishes `Config.ui` as CSS custom properties (`--ui-color-*`, `--ui-size-*`, `--ui-fade`) on `#ui-root`. v1 UI rule: plain DOM, solid colours, system font; no images, icon libraries or new dependencies.
 - Runner sub-lanes: keep `render.track.laneOffsetPerSlot` at least the runner footprint and `render.label.worldSize`, or concurrent runners overlap on screen.

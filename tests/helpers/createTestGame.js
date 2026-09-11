@@ -24,8 +24,9 @@ export function createTestConfig(overrides = {}) {
 
 /**
  * Game wired for deterministic tests. No canvas, no Three.js, no DOM -- only the core graph.
- * @param {{ level?: object|null, config?: object }} [opts] partial config overrides on top of the test base
+ * @param {{ level?: object|null, levels?: object[]|null, config?: object }} [opts] `levels` is a progression list;
+ *   `config` holds partial overrides on top of the test base
  */
-export function createTestGame({ level = null, config: overrides = {} } = {}) {
-  return createGame({ config: createTestConfig(overrides), level });
+export function createTestGame({ level = null, levels = null, config: overrides = {} } = {}) {
+  return createGame({ config: createTestConfig(overrides), level, levels });
 }

@@ -1,7 +1,7 @@
 /**
  * Central, frozen game configuration.
  *
- * Sections read by the pure logic layer (src/core): grid, track, units, inventory, rules, timing.
+ * Sections read by the pure logic layer (src/core): grid, track, units, inventory, rules, timing, progression.
  * Sections read by the presentation layer only (src/render, src/ui): render, ui, debug.
  * Core code must never read `render`.
  *
@@ -73,6 +73,13 @@ export const Config = Object.freeze({
     epsilon: 1e-9,
   }),
 
+  /** Money and level progression (read by src/core/ProgressManager). */
+  progression: Object.freeze({
+    startingMoney: 0,
+    /** Paid once per won level, when the player presses Continue. */
+    rewardPerLevel: 50,
+  }),
+
   render: Object.freeze({
     /** World units per cell. The ONLY place cell units become world units. */
     cellSize: 1,
@@ -137,23 +144,53 @@ export const Config = Object.freeze({
     pixelRatioMax: 2,
   }),
 
-  /** DOM overlay copy and colours (read by src/ui only). */
+  /** DOM overlay: copy, colours, sizes (px) and timings (s). Read by src/ui only; published as CSS custom properties. */
   ui: Object.freeze({
-    text: Object.freeze({ blocksLeft: 'Blocks left', slots: 'Slots', won: 'Level cleared!', lost: 'Level lost', restart: 'Restart' }),
-    loseReasons: Object.freeze({
-      'all-slots-blocked': 'All active slots are blocked.',
-      'reserve-empty': 'The reserve is empty.',
-      'no-valid-moves': 'No unit can reach a block.',
+    text: Object.freeze({
+      level: 'Level',
+      currency: '$',
+      settings: 'Settings',
+      paused: 'Paused',
+      resume: 'Resume',
+      restartLevel: 'Restart level',
+      won: 'Congratulations!',
+      continue: 'Continue',
+      lost: 'Out of space',
+      retry: 'Retry',
     }),
     colors: Object.freeze({
       text: '#ffffff',
-      panel: 'rgba(0, 0, 0, 0.75)',
-      backdrop: 'rgba(0, 0, 0, 0.35)',
+      panel: '#1d1d27',
+      backdrop: 'rgba(0, 0, 0, 0.6)',
+      money: '#ffd24a',
       won: '#7cff8a',
       lost: '#ff7c7c',
       button: '#ffffff',
       buttonText: '#000000',
+      buttonSecondary: '#34343f',
+      buttonSecondaryText: '#ffffff',
     }),
+    /** Pixels. The renderer keeps the board below barHeight (main.js passes it as a viewport inset). */
+    sizes: Object.freeze({
+      font: 16,
+      titleFont: 26,
+      barHeight: 56,
+      barPadding: 12,
+      iconButton: 40,
+      iconBarWidth: 18,
+      iconBarHeight: 2,
+      iconBarGap: 4,
+      radius: 10,
+      gap: 12,
+      cardWidth: 280,
+      cardPadding: 24,
+      buttonPadY: 10,
+      buttonPadX: 20,
+    }),
+    /** Seconds. The win/lose cards wait this long after LEVEL_WON / LEVEL_LOST so the last move stays visible. */
+    timing: Object.freeze({ winOverlayDelay: 0.6, loseOverlayDelay: 0.6, fade: 0.15 }),
+    /** Opacity of the settings button while it cannot be used (level over). */
+    disabledOpacity: 0.35,
   }),
 
   debug: Object.freeze({ logEvents: false }),

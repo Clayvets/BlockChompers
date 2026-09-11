@@ -1,7 +1,8 @@
 import { Config } from './config/Config.js';
 import { createGame } from './core/createGame.js';
 import { Events } from './core/Events.js';
-import { level01 } from './core/levels/index.js';
+import { GamePhase } from './core/GameManager.js';
+import { levels } from './core/levels/index.js';
 import { Renderer } from './render/Renderer.js';
 import { InputManager } from './input/InputManager.js';
 import { UIManager } from './ui/UIManager.js';
@@ -10,25 +11,18 @@ import { UIManager } from './ui/UIManager.js';
 const canvas = document.querySelector('#canvas-game');
 const uiRoot = document.querySelector('#ui-root');
 
-const { game, eventBus, config } = createGame({ config: Config, level: level01 });
+const { game, eventBus, config } = createGame({ config: Config, levels });
 
 const renderer = new Renderer({ canvas, config });
 const input = new InputManager({ canvas, renderer, gameManager: game });
 const ui = new UIManager({ root: uiRoot, eventBus, gameManager: game, config });
 
 renderer.init();
+renderer.setViewportInsets({ top: config.ui.sizes.barHeight }); // keep the board below the HUD bar
 renderer.resize(window.innerWidth, window.innerHeight);
 const unbinds = [renderer.bindEvents(eventBus)];
 input.attach();
 ui.mount();
-ui.onRestart(() => game.reset());
-
-// Clicks are ignored while the win/lose overlay is up (the game would reject them anyway).
-unbinds.push(
-  eventBus.on(Events.LEVEL_WON, () => input.setEnabled(false)),
-  eventBus.on(Events.LEVEL_LOST, () => input.setEnabled(false)),
-  eventBus.on(Events.LEVEL_LOADED, () => input.setEnabled(true)),
-);
 
 if (config.debug.logEvents) {
   for (const type of Object.values(Events)) {
@@ -47,6 +41,8 @@ function frame(now) {
 
   game.update(dt);
   const snapshot = game.getSnapshot();
+  // Units are clickable only while the level runs unpaused; the modals also block the pointer physically.
+  input.setEnabled(snapshot.phase === GamePhase.PLAYING && !snapshot.paused);
   renderer.sync(snapshot);
   ui.update(snapshot);
   renderer.render();
