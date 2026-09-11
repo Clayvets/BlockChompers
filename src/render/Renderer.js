@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { PrimitiveFactory } from './PrimitiveFactory.js';
 import { Events } from '../core/Events.js';
 import { UnitState } from '../core/Unit.js';
+import { Cues } from '../app/Cues.js';
 import { ease } from './anim/easing.js';
 import { VfxFactory } from './vfx/VfxFactory.js';
 import { VfxManager } from './vfx/VfxManager.js';
@@ -30,6 +31,8 @@ const clearList = (list) => {
  * Juice runs on a presentation clock (sync's dtMs: frozen while paused, scaled by debug.timeScale): the muzzle pop,
  * the capacity number swap, the death pop and the "N/5" counter punch live here because they animate meshes this class
  * owns; the VfxManager borrows blocks and unit positions through the host methods (takeBlockMesh, unitTip, ...).
+ * The visual moments sounds sync to go out as cues (src/app/Cues.js) on the optional `cues` bus: a block breaking (the
+ * projectile lands), a capacity number dropping, a death pop starting, a unit landing in its slot, the counter hitting 0.
  *
  * Layout: a fixed portrait design (Config.render.layout) in design units, which are world units on the x/z plane.
  * computeLayout() (pure) gives every rect; the camera shows the whole design and never refits on a level change.
@@ -100,12 +103,13 @@ export class Renderer {
   #insets = { top: 0, bottom: 0 };
 
   /**
-   * @param {{ canvas: HTMLCanvasElement, config: object, factory?: PrimitiveFactory }} deps
+   * @param {{ canvas: HTMLCanvasElement, config: object, factory?: PrimitiveFactory, cues?: import('../app/Cues.js').CueBus }} deps
    */
-  constructor({ canvas, config, factory = new PrimitiveFactory(config) }) {
+  constructor({ canvas, config, factory = new PrimitiveFactory(config), cues = null }) {
     this.canvas = canvas;
     this.config = config;
     this.factory = factory;
+    this.cues = cues;
     /** @type {THREE.Scene | null} */
     this.scene = null;
     /** @type {THREE.OrthographicCamera | null} */
@@ -290,7 +294,10 @@ export class Renderer {
     if (free !== this.#counterFree) {
       if (this.#counterFree !== null) {
         this.#counterPunchAt = now;
-        if (free === 0) this.#counterFlashAt = now;
+        if (free === 0) {
+          this.#counterFlashAt = now;
+          this.#cue(Cues.SLOTS_EMPTY);
+        }
       }
       this.#counterFree = free;
       this.factory.setText(counter, `${free}/${total}`);
@@ -514,8 +521,18 @@ export class Renderer {
     const group = this.#unitMeshes.get(unitId);
     if (!group) return 0;
     group.userData.juice.deathAt = this.#clock;
+    this.#cue(Cues.UNIT_POP);
     out.copy(group.position);
     return group.userData.color;
+  }
+
+  /** A projectile landed and its block starts breaking. */
+  blockHit() {
+    this.#cue(Cues.BLOCK_BREAK);
+  }
+
+  #cue(type) {
+    if (this.cues) this.cues.emit(type);
   }
 
   /** Debug numbers: draw calls and memory of the last frame, and active effect instances. */
@@ -541,6 +558,7 @@ export class Renderer {
     const ud = group.userData;
     const L = this.config.render.vfx.label;
     if (unit.capacity !== ud.labelValue) {
+      if (unit.capacity < ud.labelValue && unit.capacity > 0) this.#cue(Cues.CAPACITY_TICK); // at 0 the death pop sounds
       const incoming = ud.labelSpare;
       ud.labelSpare = ud.label;
       ud.label = incoming;
@@ -714,6 +732,10 @@ export class Renderer {
       flightPose(motion.path, flightProgress(unit, this.#launchSteps, this.#alpha), motionEasing, back, out);
     } else if (unit.state === UnitState.RETURNED && unit.slotIndex !== null) {
       const progress = returnToSlotMs > 0 ? (now - motion.since) / returnToSlotMs : 1;
+      if (progress >= 1 && !motion.landed) {
+        motion.landed = true;
+        this.#cue(Cues.UNIT_PARKED);
+      }
       const slot = layout.slots[unit.slotIndex];
       this.#slotPoint.x = slot.x + slot.w / 2;
       this.#slotPoint.y = slot.y + slot.h / 2;
@@ -738,7 +760,8 @@ export class Renderer {
   #motionFor(unit, now) {
     let motion = this.#motion.get(unit.id);
     if (!motion) {
-      motion = { state: unit.state, launchSeq: unit.launchSeq, from: null, since: now, path: null, last: { x: 0, y: 0 }, seen: false };
+      // landed: a unit first seen already parked makes no landing sound.
+      motion = { state: unit.state, launchSeq: unit.launchSeq, from: null, since: now, path: null, last: { x: 0, y: 0 }, seen: false, landed: true };
       if (unit.state === UnitState.LAUNCHING) motion.from = this.#originPoint(unit); // first sight mid-flight
       this.#motion.set(unit.id, motion);
       return motion;
@@ -751,6 +774,7 @@ export class Renderer {
     } else if (unit.state === UnitState.RETURNED && motion.state !== UnitState.RETURNED) {
       motion.from = motion.seen ? { x: motion.last.x, y: motion.last.y } : null;
       motion.since = now;
+      motion.landed = false;
     }
     motion.state = unit.state;
     motion.launchSeq = unit.launchSeq;

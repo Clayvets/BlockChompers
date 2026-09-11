@@ -1,5 +1,7 @@
 import { Events } from '../core/Events.js';
 import { GamePhase } from '../core/GameManager.js';
+import { AppState } from '../app/AppFlow.js';
+import { Cues } from '../app/Cues.js';
 import { TweenScheduler } from '../render/anim/TweenScheduler.js';
 
 const kebab = (key) => key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
@@ -7,18 +9,23 @@ const now = () => globalThis.performance.now();
 
 /**
  * Flat DOM UI (plain elements, solid colours, system font; no images, icon fonts or dependencies), with juice:
+ *   start    -- start screen while the app flow is in MENU (page load): the game title and a big Play button, with the
+ *               HUD hidden. Play plays the exit animation, then starts the flow (AppFlow.play: Level 1 loads and the
+ *               HUD slides in).
  *   bar      -- settings button, "Level N", money. Slides in at every level start; the level label swaps with a
  *               slide; the money counts up with a punch when the "+$X" reward label lands on it.
- *   settings -- panel shown while paused (Resume, Restart level, Effects toggle); slides and fades in and out.
+ *   settings -- panel shown while paused (Resume, Restart level, Sound on/off); slides and fades in and out.
  *   result   -- win card ("Congratulations!", "+$X", Continue / Play again) or lose card ("Out of space", Retry).
  *               Backdrop fades in, the card pops in with overshoot (softer for a loss, whose title shakes), and the
  *               items enter with a stagger. A button plays the exit animation first and only then sends its command.
  *   buttons  -- squash on pointerdown, bounce back on release.
  *
  * Animations use the Web Animations API on transform and opacity only; times, distances and easings come from
- * Config.ui.anim. UIManager keeps no game state: update(snapshot, dtMs) renders it and clicks become GameManager
- * commands. isAnimating() is true while an overlay enters or leaves, so main.js keeps the board's input off.
- * hooks.onWinShown / hooks.onResultClosed let main.js start and stop the win confetti.
+ * Config.ui.anim. UIManager keeps no game state: update(snapshot, dtMs) renders it, and clicks become GameManager or
+ * AppFlow commands. It emits cues (src/app/Cues.js) for what the player does and sees -- taps, overlays entering and
+ * leaving, Play, the win and lose cards, each money tick -- which the AudioManager turns into sounds. isAnimating() is
+ * true while an overlay enters or leaves, so main.js keeps the board's input off. hooks.onWinShown /
+ * hooks.onResultClosed let main.js start and stop the win confetti.
  */
 export class UIManager {
   #els = null;
@@ -31,27 +38,33 @@ export class UIManager {
   #flyLandsAt = 0;
   #busy = 0;
   #closing = false;
+  #starting = false;
   #settingsOpen = false;
 
   /**
    * @param {{ root: HTMLElement, eventBus: object, gameManager: object, config?: object,
-   *           effects?: import('./EffectsPreference.js').EffectsPreference, hooks?: { onWinShown?: Function, onResultClosed?: Function } }} deps
+   *           flow?: import('../app/AppFlow.js').AppFlow, effects?: import('./EffectsPreference.js').EffectsPreference,
+   *           sound?: import('./SoundPreference.js').SoundPreference, cues?: import('../app/Cues.js').CueBus,
+   *           hooks?: { onWinShown?: Function, onResultClosed?: Function } }} deps
    */
-  constructor({ root, eventBus, gameManager, config = gameManager.config, effects = null, hooks = {} }) {
+  constructor({ root, eventBus, gameManager, config = gameManager.config, flow = null, effects = null, sound = null, cues = null, hooks = {} }) {
     this.root = root;
     this.eventBus = eventBus;
     this.gameManager = gameManager;
     this.config = config;
+    this.flow = flow;
     this.effects = effects;
+    this.sound = sound;
+    this.cues = cues;
     this.hooks = hooks;
   }
 
   /** True while an overlay is entering or leaving: the board takes no input then. */
   isAnimating() {
-    return this.#busy > 0 || this.#closing;
+    return this.#busy > 0 || this.#closing || this.#starting;
   }
 
-  /** Build the bar, the two modals and the flying reward label inside root; subscribe to the level events. */
+  /** Build the bar, the modals and the flying reward label inside root; subscribe to the level events. */
   mount() {
     if (this.#els) return;
     const { text } = this.config.ui;
@@ -69,19 +82,22 @@ export class UIManager {
     const settings = this.#modal(text.paused, [
       ['button', text.resume, () => this.gameManager.resume()],
       ['button button-secondary', text.restartLevel, () => this.gameManager.restartLevel()],
-      ['button button-secondary', '', () => this.#toggleEffects()],
+      ['button button-secondary', '', () => this.#toggleSound()],
     ]);
     const result = this.#modal('', [['button', '', () => this.#onResultAction()]]);
     const reward = this.#make('div', 'card-reward');
     result.title.after(reward);
     result.reward = reward;
+    // Play sounds its own confirm (the PLAY cue), not the tap.
+    const start = this.#modal(text.title, [['button button-play', text.play, () => this.#onPlay(), false]]);
+    start.root.classList.add('modal-start');
     const fly = this.#make('div', 'fly-label');
     fly.hidden = true;
 
-    this.root.append(bar, settings.root, result.root, fly);
-    this.#els = { bar, settingsButton, levelLabel, moneyLabel, settings, result, fly };
+    this.root.append(bar, settings.root, result.root, start.root, fly);
+    this.#els = { bar, settingsButton, levelLabel, moneyLabel, settings, result, start, fly };
     this.#shown = {};
-    this.#renderEffectsLabel();
+    this.#renderSoundLabel();
 
     const offs = [
       this.eventBus.on(Events.LEVEL_WON, () => this.#schedule('won')),
@@ -89,6 +105,10 @@ export class UIManager {
       this.eventBus.on(Events.LEVEL_LOADED, () => this.#onLevelLoaded()),
     ];
     this.#unbind = () => offs.forEach((off) => off());
+    if (this.#inMenu()) {
+      bar.hidden = true;
+      this.#showStart();
+    }
   }
 
   unmount() {
@@ -97,8 +117,8 @@ export class UIManager {
     this.hideResult();
     this.#tweens.clear();
     if (this.#els) {
-      const { bar, settings, result, fly } = this.#els;
-      for (const el of [bar, settings.root, result.root, fly]) el.remove();
+      const { bar, settings, result, start, fly } = this.#els;
+      for (const el of [bar, settings.root, result.root, start.root, fly]) el.remove();
     }
     this.#els = null;
   }
@@ -123,16 +143,51 @@ export class UIManager {
     }
     this.#tweens.update(dtMs);
     const shownMoney = Math.round(this.#money.value);
-    if (this.#changed('money', shownMoney)) this.#els.moneyLabel.textContent = `${text.currency}${shownMoney}`;
+    const counting = this.#shown.money !== undefined;
+    if (this.#changed('money', shownMoney)) {
+      this.#els.moneyLabel.textContent = `${text.currency}${shownMoney}`;
+      if (counting) this.#cue(Cues.COIN);
+    }
     if (snapshot.paused !== this.#settingsOpen) this.#setSettingsOpen(snapshot.paused);
     const playing = snapshot.phase === GamePhase.PLAYING;
     if (this.#changed('playing', playing)) settingsButton.disabled = !playing;
   }
 
-  /** Every level start (next level, restart, retry): the bar slides in. */
+  #inMenu() {
+    return Boolean(this.flow) && this.flow.state === AppState.MENU;
+  }
+
+  /** Start screen: the same entrance as the win card (backdrop, card pop with overshoot, staggered title and button). */
+  #showStart() {
+    const a = this.config.ui.anim;
+    const start = this.#els.start;
+    start.root.hidden = false;
+    this.#enterOverlay(start, [start.title, start.buttons[0]], a.cardFromScale, a.overshoot);
+    start.buttons[0].focus();
+  }
+
+  /**
+   * Play: the PLAY cue goes out inside this click, so the AudioManager can create and resume its AudioContext (browser
+   * autoplay policy). The screen plays its exit, then the flow starts: Level 1 loads and its LEVEL_LOADED slides the
+   * HUD in.
+   */
+  #onPlay() {
+    if (!this.#inMenu() || this.#starting) return;
+    this.#starting = true;
+    this.#cue(Cues.PLAY);
+    this.#exitOverlay(this.#els.start, () => {
+      this.#els.start.root.hidden = true;
+      this.#starting = false;
+      this.flow.play();
+    });
+  }
+
+  /** Every level start (next level, restart, retry, Play): the bar slides in. */
   #onLevelLoaded() {
     this.hideResult();
+    if (this.#inMenu()) return;
     const a = this.config.ui.anim;
+    this.#els.bar.hidden = false;
     this.#animate(this.#els.bar, [{ transform: 'translateY(-110%)' }, { transform: 'translateY(0)' }], a.hudInMs, a.overshoot);
   }
 
@@ -163,6 +218,7 @@ export class UIManager {
     this.#settingsOpen = open;
     const { root, card, buttons } = this.#els.settings;
     const a = this.config.ui.anim;
+    this.#cue(open ? Cues.OVERLAY_IN : Cues.OVERLAY_OUT);
     if (open) {
       root.hidden = false;
       this.#animate(root, [{ opacity: 0 }, { opacity: 1 }], a.settingsInMs, a.soft, 0, true);
@@ -180,16 +236,16 @@ export class UIManager {
     else hide();
   }
 
-  #toggleEffects() {
-    if (this.effects) this.effects.toggle();
-    this.#renderEffectsLabel();
+  #toggleSound() {
+    if (this.sound) this.sound.toggle();
+    this.#renderSoundLabel();
   }
 
-  #renderEffectsLabel() {
+  #renderSoundLabel() {
     const { text } = this.config.ui;
     const button = this.#els.settings.buttons[2];
-    button.hidden = !this.effects;
-    button.textContent = this.effects && this.effects.reduced ? text.effectsReduced : text.effectsFull;
+    button.hidden = !this.sound;
+    button.textContent = this.sound && !this.sound.on ? text.soundOff : text.soundOn;
   }
 
   /** Win card: title, the reward, and Continue (or Play again on the last level of the cycle). */
@@ -199,6 +255,7 @@ export class UIManager {
     this.#els.result.reward.textContent = `+${text.currency}${reward}`;
     this.#els.result.reward.hidden = false;
     this.#showResult('won', text.won, isLastLevel ? text.playAgain : text.continue);
+    this.#cue(Cues.WIN);
     if (this.hooks.onWinShown) this.hooks.onWinShown();
   }
 
@@ -207,6 +264,7 @@ export class UIManager {
     const { text } = this.config.ui;
     this.#els.result.reward.hidden = true;
     this.#showResult('lost', text.lost, text.retry);
+    this.#cue(Cues.LOSE);
   }
 
   hideResult() {
@@ -229,7 +287,8 @@ export class UIManager {
   #showResult(kind, titleText, actionText) {
     if (!this.#els) return;
     const a = this.config.ui.anim;
-    const { root, card, title, reward, buttons } = this.#els.result;
+    const result = this.#els.result;
+    const { root, title, reward, buttons } = result;
     this.#resultKind = kind;
     this.#closing = false;
     root.dataset.result = kind;
@@ -237,14 +296,8 @@ export class UIManager {
     buttons[0].textContent = actionText;
     root.hidden = false;
     const won = kind === 'won';
-    this.#animate(root, [{ opacity: 0 }, { opacity: 1 }], a.backdropInMs, a.soft, 0, true);
-    const from = won ? a.cardFromScale : a.loseCardFromScale;
-    this.#animate(card, [{ transform: `scale(${from})`, opacity: 0 }, { transform: 'scale(1)', opacity: 1 }], a.cardInMs, won ? a.overshoot : a.soft, 0, true);
-    const items = won ? [title, reward, buttons[0]] : [title, buttons[0]];
-    items.forEach((el, i) => {
-      this.#animate(el, [{ transform: `translateY(${a.itemShift}px)`, opacity: 0 }, { transform: 'translateY(0)', opacity: 1 }],
-        a.itemInMs, a.overshoot, a.cardInMs * 0.35 + i * a.itemStaggerMs, true);
-    });
+    this.#enterOverlay(result, won ? [title, reward, buttons[0]] : [title, buttons[0]],
+      won ? a.cardFromScale : a.loseCardFromScale, won ? a.overshoot : a.soft);
     if (!won && !(this.effects && this.effects.reduced)) {
       const p = a.shakePx;
       this.#animate(title, [0, -p, p, -p * 0.6, p * 0.6, -p * 0.25, 0].map((x) => ({ transform: `translateX(${x}px)` })),
@@ -259,16 +312,32 @@ export class UIManager {
     const kind = this.#resultKind;
     this.#closing = true;
     if (kind === 'won') this.#flyReward();
-    const a = this.config.ui.anim;
-    const { root, card } = this.#els.result;
-    this.#animate(card, [{ transform: 'scale(1)', opacity: 1 }, { transform: 'scale(0.85)', opacity: 0 }], a.cardOutMs, a.exit);
-    const fade = this.#animate(root, [{ opacity: 1 }, { opacity: 0 }], a.backdropOutMs, a.exit);
-    const done = () => {
+    this.#exitOverlay(this.#els.result, () => {
       if (this.#resultKind !== kind) return;
       this.hideResult();
       if (kind === 'won') this.gameManager.continueToNextLevel();
       else this.gameManager.restartLevel();
-    };
+    });
+  }
+
+  /** Backdrop fades in, the card pops in from `fromScale` with `easing`, then `items` enter one after another. */
+  #enterOverlay({ root, card }, items, fromScale, easing) {
+    const a = this.config.ui.anim;
+    this.#cue(Cues.OVERLAY_IN);
+    this.#animate(root, [{ opacity: 0 }, { opacity: 1 }], a.backdropInMs, a.soft, 0, true);
+    this.#animate(card, [{ transform: `scale(${fromScale})`, opacity: 0 }, { transform: 'scale(1)', opacity: 1 }], a.cardInMs, easing, 0, true);
+    items.forEach((el, i) => {
+      this.#animate(el, [{ transform: `translateY(${a.itemShift}px)`, opacity: 0 }, { transform: 'translateY(0)', opacity: 1 }],
+        a.itemInMs, a.overshoot, a.cardInMs * 0.35 + i * a.itemStaggerMs, true);
+    });
+  }
+
+  /** The card shrinks and fades with the backdrop; `done` runs once both have finished. */
+  #exitOverlay({ root, card }, done) {
+    const a = this.config.ui.anim;
+    this.#cue(Cues.OVERLAY_OUT);
+    this.#animate(card, [{ transform: 'scale(1)', opacity: 1 }, { transform: 'scale(0.85)', opacity: 0 }], a.cardOutMs, a.exit);
+    const fade = this.#animate(root, [{ opacity: 1 }, { opacity: 0 }], a.backdropOutMs, a.exit);
     if (fade) setTimeout(done, Math.max(a.cardOutMs, a.backdropOutMs));
     else done();
   }
@@ -299,13 +368,17 @@ export class UIManager {
     else hide();
   }
 
-  /** A button with a squash on press and a bounce on release (transform only). */
-  #button(className, label, onClick) {
+  /** A button with a squash on press and a bounce on release (transform only); `tap` sends the TAP cue on press. */
+  #button(className, label, onClick, tap = true) {
     const button = this.#make('button', className, label);
     button.type = 'button';
     button.addEventListener('click', onClick);
     const a = this.config.ui.anim;
-    const press = () => this.#animate(button, [{ transform: 'scale(1)' }, { transform: `scale(${a.buttonDownScale})` }], a.buttonDownMs, 'ease-out');
+    const press = () => {
+      if (button.disabled) return;
+      if (tap) this.#cue(Cues.TAP);
+      this.#animate(button, [{ transform: 'scale(1)' }, { transform: `scale(${a.buttonDownScale})` }], a.buttonDownMs, 'ease-out');
+    };
     const release = () => this.#animate(button, [{ transform: `scale(${a.buttonDownScale})` }, { transform: 'scale(1)' }], a.buttonUpMs, a.overshoot);
     button.addEventListener('pointerdown', press);
     button.addEventListener('pointerup', release);
@@ -314,6 +387,10 @@ export class UIManager {
       if (e.buttons) release();
     });
     return button;
+  }
+
+  #cue(type) {
+    if (this.cues) this.cues.emit(type);
   }
 
   /**
@@ -350,13 +427,13 @@ export class UIManager {
     return node;
   }
 
-  /** Full-screen modal with a centred card: title + buttons. Hidden until shown. */
+  /** Full-screen modal with a centred card: title + buttons ([className, label, onClick, tap?]). Hidden until shown. */
   #modal(titleText, buttonSpecs) {
     const root = this.#make('div', 'modal');
     root.hidden = true;
     const card = this.#make('div', 'card');
     const title = this.#make('h2', 'card-title', titleText);
-    const buttons = buttonSpecs.map(([className, label, onClick]) => this.#button(className, label, onClick));
+    const buttons = buttonSpecs.map(([className, label, onClick, tap]) => this.#button(className, label, onClick, tap));
     card.append(title, ...buttons);
     root.append(card);
     return { root, card, title, buttons };

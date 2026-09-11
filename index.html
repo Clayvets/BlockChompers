@@ -144,6 +144,21 @@
         background: var(--ui-color-button-secondary);
         color: var(--ui-color-button-secondary-text);
       }
+      /* Start screen: the same modal and card, darker backdrop, big title and Play button. */
+      #ui-root .modal-start {
+        background: var(--ui-color-title-backdrop);
+      }
+      #ui-root .modal-start .card {
+        width: var(--ui-size-start-card-width);
+      }
+      #ui-root .modal-start .card-title {
+        font-size: var(--ui-size-start-title-font);
+        color: var(--ui-color-title);
+      }
+      #ui-root .button-play {
+        padding: var(--ui-size-play-pad-y) var(--ui-size-button-pad-x);
+        font-size: var(--ui-size-play-font);
+      }
     </style>
   </head>
   <body>

@@ -2,7 +2,7 @@
  * Central, frozen game configuration.
  *
  * Sections read by the pure logic layer (src/core): grid, track, units, inventory, rules, timing, progression.
- * Sections read by the presentation layer only (src/render, src/ui): render, ui, debug.
+ * Sections read by the presentation layer only (src/render, src/ui, src/audio): render (render.audio for sound), ui, debug.
  * Core code must never read `render`.
  *
  * Units of measure: distances are CELL UNITS (one grid cell = 1); durations are SECONDS, except keys ending in Ms
@@ -227,7 +227,12 @@ export const Config = Object.freeze({
       maxProjectiles: 48,
       maxParticles: 600,
       maxConfetti: 160,
-      /** Effects "reduced" (settings, or prefers-reduced-motion): particle and confetti counts x this, no shakes. */
+      /**
+       * Effects level: 'full' | 'reduced'. There is no in-game option; main.js switches to 'reduced' when the system
+       * asks for reduced motion (prefers-reduced-motion).
+       */
+      effects: 'full',
+      /** Reduced effects: particle and confetti counts x this, no shakes. */
       reducedScale: 0.4,
       /** Projectile ball and its trail of fading sparks (one spark every trailEveryMs while it flies). */
       projectile: Object.freeze({ size: 0.16, height: 1.2, trailEveryMs: 16, trailLifeMs: 140, trailSize: 0.45 }),
@@ -247,6 +252,86 @@ export const Config = Object.freeze({
       confetti: Object.freeze({
         count: 140, durationMs: 2800, width: 12, height: 7, speed: 1150, speedJitter: 0.35, spread: 0.45,
         gravity: 1500, drag: 0.9, spin: 14, sway: 40, fadeMs: 500, stopFadeMs: 180,
+      }),
+    }),
+    /**
+     * Sound effects (src/audio; presentation only). Gains are 0..1, pitches Hz, times ms. src/audio/SfxBank.js builds
+     * each sound from its numbers below, with no audio files: `tone` is an oscillator sliding freq -> freqEnd, `noise`
+     * (also `click`, `puff`) is white noise through a filter sweeping freq -> freqEnd with resonance q, and `notes`
+     * plays the pitches in hz stepMs apart (noteMs each, lastNoteMs for the last). Every layer rises over attackMs and
+     * then decays until ms. To play a file instead, give a sound `file: 'name.ogg'` and a `volume`. Per sound,
+     * minIntervalMs skips a retrigger that comes sooner, `combo` sounds rise in pitch while they keep coming, and
+     * pitchJitter varies the pitch by up to +/- that fraction.
+     */
+    audio: Object.freeze({
+      /** Master gain (the Sound toggle mutes it) and the sfx bus under it. */
+      masterVolume: 1,
+      sfxVolume: 0.8,
+      /** Initial state of the settings Sound toggle (false = on). */
+      muted: false,
+      /** Mute / unmute ramp, so the toggle never clicks. */
+      muteFadeMs: 60,
+      /** A sound starts this long after its trigger, so it is never scheduled in the audio thread's past (no click). */
+      lookaheadMs: 10,
+      /** Sounds playing at once; one more is skipped, never queued. */
+      maxVoices: 12,
+      /** Combo sounds (block break, coin): each one within comboWindowMs of the last is comboSemitones higher... */
+      comboWindowMs: 450,
+      comboSemitones: 0.5,
+      /** ...up to this many steps; a longer gap resets the pitch. */
+      comboMaxSteps: 8,
+      /** Envelopes decay to this gain (-80 dB) before a voice stops: an exponential ramp cannot reach 0. */
+      envelopeFloor: 0.0001,
+      /** Length of the one white-noise buffer that every noise layer loops over. */
+      noiseBufferMs: 1000,
+      /** Folder of file-based sounds, relative to the page (public/assets/sfx/ in the repo). */
+      assetsPath: 'assets/sfx/',
+      sounds: deepFreeze({
+        /** UI button press (not Play). */
+        tap: { minIntervalMs: 40, tone: { freq: 720, freqEnd: 480, attackMs: 2, ms: 55, volume: 0.22 } },
+        /** Overlay enters / leaves. */
+        whooshIn: { minIntervalMs: 120, noise: { freq: 350, freqEnd: 1600, q: 0.9, attackMs: 90, ms: 260, volume: 0.3 } },
+        whooshOut: { minIntervalMs: 120, noise: { freq: 1400, freqEnd: 320, q: 0.9, attackMs: 30, ms: 200, volume: 0.26 } },
+        /** Start screen Play. */
+        confirm: { minIntervalMs: 250, notes: { hz: Object.freeze([523.25, 783.99]), stepMs: 80, noteMs: 150, lastNoteMs: 360, attackMs: 4, volume: 0.24 } },
+        /** A unit leaves the reserve or its slot. */
+        launch: { minIntervalMs: 60, noise: { freq: 420, freqEnd: 1800, q: 1.2, attackMs: 50, ms: 190, volume: 0.34 } },
+        /** A unit fires (BLOCK_CONSUMED). */
+        pew: { minIntervalMs: 45, pitchJitter: 0.07, tone: { freq: 1300, freqEnd: 480, attackMs: 2, ms: 85, volume: 0.07 } },
+        /** A block breaks, on the visual impact; rises with the combo. */
+        pop: {
+          minIntervalMs: 40, combo: true,
+          tone: { freq: 900, freqEnd: 220, attackMs: 1, ms: 70, volume: 0.2 },
+          click: { freq: 3500, q: 0.7, attackMs: 1, ms: 14, volume: 0.08 },
+        },
+        /** A capacity number drops (to 1 or more). */
+        tick: { minIntervalMs: 55, tone: { freq: 2200, freqEnd: 2000, attackMs: 1, ms: 28, volume: 0.05 } },
+        /** A unit pops at capacity 0. */
+        unitPop: {
+          minIntervalMs: 60,
+          tone: { freq: 620, freqEnd: 110, attackMs: 2, ms: 190, volume: 0.26 },
+          puff: { freq: 2000, freqEnd: 400, q: 0.7, attackMs: 2, ms: 110, volume: 0.12 },
+        },
+        /** A unit lands in its slot. */
+        park: {
+          minIntervalMs: 60,
+          tone: { freq: 170, freqEnd: 70, attackMs: 3, ms: 130, volume: 0.28 },
+          puff: { freq: 600, freqEnd: 200, q: 0.7, attackMs: 2, ms: 45, volume: 0.06 },
+        },
+        /** The "N/5" counter reaches 0. */
+        warn: { minIntervalMs: 800, notes: { hz: Object.freeze([466.16, 466.16]), stepMs: 150, noteMs: 100, attackMs: 6, volume: 0.1 } },
+        /** The final rush starts. */
+        rush: {
+          minIntervalMs: 1000,
+          noise: { freq: 260, freqEnd: 3200, q: 1.1, attackMs: 450, ms: 700, volume: 0.3 },
+          tone: { freq: 220, freqEnd: 880, attackMs: 450, ms: 700, volume: 0.05 },
+        },
+        /** The win card appears, with the confetti. */
+        fanfare: { minIntervalMs: 1000, notes: { hz: Object.freeze([523.25, 659.25, 783.99, 1046.5]), stepMs: 95, noteMs: 170, lastNoteMs: 600, attackMs: 4, volume: 0.2 } },
+        /** Money counting up (one per shown number, throttled); rises with the combo. */
+        coin: { minIntervalMs: 70, combo: true, tone: { freq: 1320, freqEnd: 1760, attackMs: 1, ms: 60, volume: 0.08 } },
+        /** The lose card appears. */
+        lose: { minIntervalMs: 1000, notes: { hz: Object.freeze([392, 329.63, 261.63]), stepMs: 200, noteMs: 220, lastNoteMs: 560, attackMs: 8, volume: 0.16 } },
       }),
     }),
     /**
@@ -290,9 +375,12 @@ export const Config = Object.freeze({
       paused: 'Paused',
       resume: 'Resume',
       restartLevel: 'Restart level',
-      /** Settings toggle between full and reduced effects. */
-      effectsFull: 'Effects: full',
-      effectsReduced: 'Effects: reduced',
+      /** Start screen: the game title and its button. */
+      title: 'BlockChompers',
+      play: 'Play',
+      /** Settings toggle for sound (render.audio). */
+      soundOn: 'Sound: on',
+      soundOff: 'Sound: off',
       won: 'Congratulations!',
       continue: 'Continue',
       /** Replaces Continue on the last level of the cycle (the next level is Level 1 again). */
@@ -306,6 +394,9 @@ export const Config = Object.freeze({
       /** Solid top bar, so the HUD text stays readable on light level backgrounds. */
       bar: '#15151d',
       backdrop: 'rgba(0, 0, 0, 0.6)',
+      /** Start screen: a darker backdrop (the first level shows faintly behind it) and the game title. */
+      titleBackdrop: 'rgba(12, 12, 18, 0.86)',
+      title: '#ffd24a',
       money: '#ffd24a',
       won: '#7cff8a',
       lost: '#ff7c7c',
@@ -330,6 +421,11 @@ export const Config = Object.freeze({
       cardPadding: 24,
       buttonPadY: 10,
       buttonPadX: 20,
+      /** Start screen: wider card, big title, big Play button. */
+      startCardWidth: 320,
+      startTitleFont: 34,
+      playFont: 22,
+      playPadY: 16,
     }),
     /** Seconds. The win/lose cards wait this long after LEVEL_WON / LEVEL_LOST so the last move stays visible. */
     timing: Object.freeze({ winOverlayDelay: 0.6, loseOverlayDelay: 0.6 }),

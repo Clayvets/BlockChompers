@@ -52,12 +52,17 @@ export function layoutDebugEntries(layout, snapshot) {
   ];
 }
 
-/** Panel lines for performance: FPS, draw calls, active effect instances and GPU memory (renderer.info.memory). */
-export function statsDebugEntries(fps, stats, confetti) {
-  return [
+/**
+ * Panel lines for performance: FPS, draw calls, active effect instances, GPU memory (renderer.info.memory) and, with
+ * AudioManager.stats(), the sound voices playing (live = voices whose nodes are still connected).
+ */
+export function statsDebugEntries(fps, stats, confetti, audio = null) {
+  const entries = [
     ['fps', fps.toFixed(0)],
     ['draw calls', `${stats.calls}${confetti.calls ? ` + ${confetti.calls} confetti` : ''}`],
     ['particles', `${stats.particles} (projectiles ${stats.projectiles}, blocks ${stats.blocks}, confetti ${confetti.confetti})`],
     ['memory', `geometries ${stats.geometries}, textures ${stats.textures}`],
   ];
+  if (audio) entries.push(['voices', `${audio.voices}/${audio.max} (live ${audio.live}, ${audio.state})`]);
+  return entries;
 }

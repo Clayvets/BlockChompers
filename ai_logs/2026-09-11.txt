@@ -330,3 +330,52 @@ Don't change the v1 or v2 sections.
 
 Report the performance numbers and the final tuned values, and propose a commit message.
 
+=== 2026-09-11T06:29:34-05:00 | session 567fdf5c ===
+Task: add a start screen, remove the effects toggle from settings, and add SFX. All presentation only: src/core, the level files and the core tests must not change, and every new value lives in config. Don't add npm dependencies.
+
+1) Start screen:
+- On page load, show a flat, minimal title screen with the game title (render.ui.titleText) and a big "Play" button. It uses the same style and juicy enter/exit animations as the other v3 overlays.
+- The simulation doesn't run and the HUD is hidden while it's visible.
+- Clicking Play: button squash, the screen plays its exit animation, then Level 1 loads, the HUD slides in and the game starts.
+- Put the flow in a small pure state machine in src/app/AppFlow.js (MENU → PLAYING), with no three and no DOM. main.js only advances the simulation in PLAYING.
+- "Play again" after Level 3 keeps its current behavior and does not return to the start screen.
+
+2) Settings: remove the "Effects: full / reduced" toggle from the settings panel.
+- Keep the config key and default it to full.
+- Still switch to reduced automatically when prefers-reduced-motion is set, without any visible option.
+- Add a "Sound: on / off" toggle in its place.
+
+3) SFX architecture:
+- Create src/audio/ with an AudioManager that listens to EventBus events and UI actions, and a SfxBank that is the only place defining sounds. For FoF, sounds are replaced by editing only SfxBank and config.
+- Generate the sounds procedurally with the Web Audio API (oscillators, noise, simple envelopes and filters), with no audio files, keeping the primitive spirit of this version. SfxBank must also support loading audio files from /assets later.
+- Create and resume the AudioContext on the Play click, which satisfies the browser autoplay policy.
+- One master gain plus sfx volume in config. The sound toggle mutes the master gain. Sounds follow pause and the debug time scale.
+
+4) Sounds (short, soft and satisfying; every pitch, duration and volume in config):
+- UI: button tap, overlay whoosh on enter and exit, Play button confirm.
+- Launch: soft whoosh when a unit leaves the reserve.
+- Fire: short "pew" on UNIT_FIRED, with a small random pitch variation.
+- Block break: a crisp pop on visual impact. Pitch rises slightly on consecutive breaks within render.audio.comboWindowMs and resets after it.
+- Capacity tick when the number drops, and a bigger pop when a unit dies at 0.
+- Park: soft thud when a unit returns to a slot.
+- Slots counter reaching 0: a subtle warning tone.
+- Final rush start: rising swoosh.
+- Win: short cheerful fanfare synced with the confetti, plus coin ticks while the money counts up.
+- Lose: soft descending tone.
+
+5) Audio optimization (required):
+- Cap simultaneous voices (render.audio.maxVoices) and set a minimum interval per sound (minIntervalMs), so Carrot's hundreds of block breaks don't stack. When a cap is hit, skip or merge sounds instead of queuing them.
+- Disconnect finished nodes; create no persistent nodes per sound.
+- Show active voices in the debug panel when debug.enabled.
+
+Tests (node, no Web Audio, no DOM):
+- AppFlow: starts in MENU, Play moves to PLAYING, and there is no simulation step while in MENU.
+- The pure audio scheduling helpers: voice cap, minInterval throttle, combo pitch rise and reset, and mute.
+- no-render-imports.test.js, all core tests and the build stay green.
+
+Check: start screen → Play → Level 1; sound works after Play; the toggle mutes and unmutes; the effects toggle is gone; Carrot with 5 units firing has no audio crackle or FPS drop.
+
+README: add these changes to the "v3 – Polish" section (what changed, why it improves feel, and the new config keys in the values table). Don't change the v1 or v2 sections.
+
+Report the sounds you created and their tuned values, and propose a commit message.
+

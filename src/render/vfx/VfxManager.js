@@ -22,8 +22,9 @@ const _hit = new THREE.Vector3();
  * Time is update(dtMs) from the Renderer's presentation clock: 0 while paused, scaled by debug.timeScale.
  *
  * The host (the Renderer) lends what effects need: takeBlockMesh, cellWorld, unitTip, paletteColor, cellSize,
- * unitFired, unitDied. Projectiles and sparks are one InstancedMesh each (VfxFactory), refilled from Pool slots every
- * frame; when a cap is reached the oldest instance is recycled (a recycled projectile lands at once).
+ * unitFired, unitDied, and hears blockHit() on every impact (the cue its sound syncs to). Projectiles and sparks are
+ * one InstancedMesh each (VfxFactory), refilled from Pool slots every frame; when a cap is reached the oldest instance
+ * is recycled (a recycled projectile lands at once).
  */
 export class VfxManager {
   constructor({ config, factory, host }) {
@@ -131,6 +132,7 @@ export class VfxManager {
     const { blockBurstCount, vfx } = this.config.render;
     this.#burst(this._pEnd[i], vfx.burst.height, this._pEnd[i + 2], this.#count(blockBurstCount),
       this._pColor[i], this._pColor[i + 1], this._pColor[i + 2], this._pScale[slot]);
+    this.host.blockHit();
     const block = this._pBlock[slot];
     this._pBlock[slot] = null;
     if (!block) return;

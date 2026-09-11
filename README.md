@@ -301,9 +301,9 @@ Values are copied from `src/config/Config.js` at v1-primitive and on the current
 
 ## v3 – Polish
 
-Goal: add juice on top of v2, meaning effects, UI animation and satisfying feedback, without touching the rules. All
-of v3 is presentation. `src/core` and its tests are unchanged, effects react to snapshots and events, and every value
-lives in `Config.render` or `Config.ui`.
+Goal: add juice on top of v2, meaning effects, UI animation, sound and satisfying feedback, plus a start screen,
+without touching the rules. All of v3 is presentation. `src/core`, the level files and their tests are unchanged,
+effects and sounds react to snapshots and events, and every value lives in `Config.render` or `Config.ui`.
 
 ### What changed
 
@@ -340,30 +340,88 @@ lives in `Config.render` or `Config.ui`.
    "+$X" flies to the money counter, which counts up with a punch. The lose card enters more softly and its title
    shakes. Buttons squash on press and bounce back. The "N/5" counter punches when it changes and flashes red at 0.
    The settings panel slides and fades. The board takes no input while an overlay animates.
-8. **Performance and settings.** One InstancedMesh per effect type, preallocated to its cap and recycled oldest
+8. **Performance and effects level.** One InstancedMesh per effect type, preallocated to its cap and recycled oldest
    first; shared geometries and materials; only active instances are uploaded, once per frame. The effect and juice
-   code allocates nothing per frame, and DOM animations touch only transform and opacity. Settings has "Effects: full
-   / reduced": reduced cuts particle and confetti counts to 40% and drops the shake, and it is the default when the
-   system asks for reduced motion. With `debug.enabled`, the debug panel adds FPS, draw calls, active particles and
-   GPU memory.
-9. **Tests.** 223 headless tests, up from 205 in v2: the layout, the easing curves, the tween scheduler (start, end,
-   stagger, cancel) and the pool (acquire, release, recycle at cap). Core and its tests are unchanged.
+   code allocates nothing per frame, and DOM animations touch only transform and opacity. Effects are full by default
+   (`render.vfx.effects`); reduced cuts particle and confetti counts to 40% and drops the shake. There is no in-game
+   option: the game switches to reduced when the system asks for reduced motion. With `debug.enabled`, the debug
+   panel adds FPS, draw calls, active particles, GPU memory and sound voices.
+9. **Start screen.** On page load a flat card shows the title and a big Play button over the darkened first level,
+   and the HUD is hidden. It enters like the win card: the backdrop fades in, the card pops with overshoot, and the
+   title and button follow one after the other. Play squashes, the card plays its exit, and only then Level 1 loads,
+   the HUD slides in and the game starts. The flow is a small pure state machine, `src/app/AppFlow.js`
+   (MENU → PLAYING). `main.js` advances the simulation only through it, so nothing steps behind the title, and the
+   board takes no input there. "Play again" after the last level is still a game command and never returns to the
+   start screen.
+10. **Settings.** The "Effects: full / reduced" button is gone and "Sound: on / off" takes its place. Off mutes the
+    master gain and stops new sounds from being created.
+11. **Sound architecture.** `src/audio/` holds an `AudioManager` that listens to game events and presentation cues,
+    and a `SfxBank` that is the only place defining sounds. Cues (`src/app/Cues.js`) cover the moments that are not
+    game events: UI actions from `UIManager` (taps, overlays entering and leaving, Play, the win and lose cards, each
+    money tick) and visual moments from the Renderer (a projectile landing, a capacity number dropping, a death pop, a
+    unit landing in its slot, the counter reaching 0). Every sound is synthesised with Web Audio from oscillators,
+    filtered noise and simple envelopes, with no audio files. `SfxBank` can also play a file from `assets/sfx/` for
+    any sound whose config entry names a `file`, using the recipe until the file has loaded, so replacing a sound
+    touches only `SfxBank` and config. The AudioContext is created and resumed inside the Play click, which satisfies
+    the browser autoplay policy. One master gain, muted by the toggle, sits over an sfx volume gain. Board sounds
+    follow pause, because they come from the simulation and the presentation clock, which both stop. They also play
+    at `debug.timeScale` (longer and lower in slow motion). UI sounds stay in real time.
+12. **Sounds.** All short and soft; every pitch, duration and volume is in `render.audio.sounds`.
+
+    | Sound | When | What it is |
+    |---|---|---|
+    | `tap` | A button is pressed (not Play) | 55 ms sine blip sliding 720 → 480 Hz |
+    | `whooshIn` / `whooshOut` | An overlay enters / leaves | Band-passed noise sweeping up / down |
+    | `confirm` | Play | Two rising chime notes, C5 then G5 |
+    | `launch` | A unit leaves the reserve or its slot | Soft rising noise whoosh, 190 ms |
+    | `pew` | A unit fires (`BLOCK_CONSUMED`) | 85 ms triangle falling 1300 → 480 Hz, ±7% random pitch |
+    | `pop` | The shot lands and the block breaks | 70 ms sine falling 900 → 220 Hz with a 14 ms high click; breaks less than 450 ms apart rise half a semitone each, up to 4 semitones |
+    | `tick` | A capacity number drops (to 1 or more) | 28 ms high sine tick |
+    | `unitPop` | A unit pops at capacity 0 | Bigger, lower pop (620 → 110 Hz) with a puff of air |
+    | `park` | A returning unit lands in its slot | Soft 170 → 70 Hz thud |
+    | `warn` | The "N/5" counter reaches 0 | Two quiet beeps |
+    | `rush` | The final rush starts | 0.7 s rising swoosh over a tone rising 220 → 880 Hz |
+    | `fanfare` | The win card appears, with the confetti | C5–E5–G5–C6 arpeggio |
+    | `coin` | The money counts up | Bright upward chirp, rising with each coin |
+    | `lose` | The lose card appears | Three soft falling notes, G4–E4–C4 |
+
+13. **Audio optimization.** A pure scheduler (`src/audio/SfxScheduler.js`) decides whether a sound may start before
+    any node exists. Nothing starts while muted. A sound retriggered within its `minIntervalMs` is skipped, and so is
+    any sound once `render.audio.maxVoices` sounds are playing; nothing is ever queued. Skipped breaks still keep the
+    combo going. Each sound creates its own nodes (oscillators, noise sources, filters, envelope gains), and they
+    disconnect themselves when its last source ends. The only persistent nodes are the two gains, plus one shared
+    white-noise buffer. Envelopes start from 0 and decay to -80 dB before a source stops, and every sound starts 10 ms
+    ahead, so nothing clicks.
+14. **Tests.** 236 headless tests, up from 205 in v2: the layout, the easing curves, the tween scheduler (start, end,
+    stagger, cancel), the pool (acquire, release, recycle at cap), the app flow (starts in MENU, Play moves to
+    PLAYING, no simulation step in MENU) and the audio scheduling (voice cap, minimum interval, combo pitch rise and
+    reset, mute). Core, the level files and their tests are unchanged.
 
 ### Why it improved feel
 
 - **Feedback clarity.** In v2 a block simply vanished as a unit passed its lane. Now each hit is a visible shot from
   one unit to one block, the block reacts when the shot lands, the unit's number ticks down with each shot, and the
-  "N/5" counter punches and flashes as room runs out.
+  "N/5" counter punches and flashes as room runs out. Sound doubles each of these: a pew as the unit fires, a pop
+  when the shot lands, a tick as the number drops, a thud when a unit parks and two quiet beeps when the counter hits
+  0, so a busy board still reads by ear.
 - **Satisfaction.** Muzzle pops, white flashes, squash and shrink, and small spark bursts make every hit feel physical,
-  and a unit that finishes its job pops instead of blinking out.
+  and a unit that finishes its job pops instead of blinking out. Breaks in a row rise in pitch, so a streak builds
+  into a small crescendo instead of repeating one note.
 - **Reward moment.** Confetti in the level's own colours over the win card, the reward flying into the money and the
-  count-up punch turn the payout into a moment instead of a number change.
+  count-up punch turn the payout into a moment instead of a number change. A fanfare lands with the confetti, and
+  coin chirps climb with the count-up.
 - **UI flow.** Overshoot entrances and a short stagger lead the eye from title to reward to button. Exits finish
   before the next level loads, so nothing jumps, and a stray tap during a transition cannot launch a unit. Fixed-size
-  controls keep tap targets and labels readable on the biggest level.
+  controls keep tap targets and labels readable on the biggest level. The start screen gives the first level a clear
+  beginning: nothing moves behind it, the same Play click turns sound on, and the HUD arrives with the level. Taps
+  and whooshes confirm every button and overlay.
 - **Performance.** On Carrot with five units firing, the frame loop runs at about 650 frames per second uncapped
   (about 1.5 ms per frame); effects add 2 draw calls to the board's 850 and confetti adds 1. GPU memory stays at 12
   geometries and 31 textures across 5 restarts. Reduced effects keep it comfortable for motion-sensitive players.
+  Sound does not change the frame rate: in the same 8 s of Carrot with five units firing, runs averaged 612 and
+  631 fps muted and 616 and 625 fps with sound (uncapped). Of 241 sound requests, 97 played and the rest were
+  skipped by `minIntervalMs`. At most 2 voices sounded at once, the output peaked at 0.25 of full scale, and audio
+  used about 1.2 ms of main-thread time per second.
 
 ### Exact values tuned
 
@@ -390,6 +448,7 @@ Values are copied from `src/config/Config.js`; "—" means the key is new in v3.
 | `render.projectileEasing` | — | `'easeInQuad'` | Speeds up into the hit. |
 | `render.blockBurstCount` | — | `6` | Readable burst; low because big levels break hundreds of blocks. |
 | `render.vfx.maxProjectiles` / `maxParticles` / `maxConfetti` | — | `48` / `600` / `160` | Preallocated caps; the oldest instance is recycled. |
+| `render.vfx.effects` | — | `'full'` | Default effects level; reduced only when the system asks for reduced motion. |
 | `render.vfx.reducedScale` | — | `0.4` | Reduced effects: 40% of the particles and confetti. |
 | `render.vfx.projectile` | — | `{ size: 0.16, height: 1.2, trailEveryMs: 16, trailLifeMs: 140, trailSize: 0.45 }` | Ball size, draw height and its trail of sparks. |
 | `render.vfx.muzzle` | — | `{ punch: 0.35, ms: 130 }` | Scale punch on the firing triangle. |
@@ -399,6 +458,30 @@ Values are copied from `src/config/Config.js`; "—" means the key is new in v3.
 | `render.vfx.death` | — | `{ ms: 260, squashAt: 0.3, squash: 0.6, stretch: 1.35, burstCount: 10 }` | Squash, shrink and sparks at capacity 0. |
 | `render.vfx.counter` | — | `{ punch: 0.4, punchMs: 240, flashColor: 0xff5252, flashMs: 600 }` | Counter punch on change, red flash at 0. |
 | `render.vfx.confetti` | — | `{ count: 140, durationMs: 2800, width: 12, height: 7, speed: 1150, speedJitter: 0.35, spread: 0.45, gravity: 1500, drag: 0.9, spin: 14, sway: 40, fadeMs: 500, stopFadeMs: 180 }` | Count, time and motion of the win confetti (CSS pixels). |
+| `render.audio.masterVolume` / `sfxVolume` | — | `1` / `0.8` | Master gain (the Sound toggle mutes it) over the sfx bus. |
+| `render.audio.muted` | — | `false` | Sound starts on. |
+| `render.audio.muteFadeMs` | — | `60` | Mute ramp, so the toggle never clicks. |
+| `render.audio.lookaheadMs` | — | `10` | A sound never starts in the audio thread's past. |
+| `render.audio.maxVoices` | — | `12` | Sounds playing at once; Carrot with five units peaks at 2. |
+| `render.audio.comboWindowMs` / `comboSemitones` / `comboMaxSteps` | — | `450` / `0.5` / `8` | One unit's breaks stay in a combo; up to 4 semitones higher, reset after a pause. |
+| `render.audio.envelopeFloor` | — | `0.0001` | Envelopes reach -80 dB before a source stops. |
+| `render.audio.noiseBufferMs` | — | `1000` | The one white-noise buffer every noise layer loops over. |
+| `render.audio.assetsPath` | — | `'assets/sfx/'` | Where a sound with a `file` loads from. |
+| `render.audio.sounds.tap` | — | `{ minIntervalMs: 40, tone: { freq: 720, freqEnd: 480, attackMs: 2, ms: 55, volume: 0.22 } }` | Short soft blip on a button. |
+| `render.audio.sounds.whooshIn` | — | `{ minIntervalMs: 120, noise: { freq: 350, freqEnd: 1600, q: 0.9, attackMs: 90, ms: 260, volume: 0.3 } }` | Overlay enters: noise sweeping up, with a swell. |
+| `render.audio.sounds.whooshOut` | — | `{ minIntervalMs: 120, noise: { freq: 1400, freqEnd: 320, q: 0.9, attackMs: 30, ms: 200, volume: 0.26 } }` | Overlay leaves: shorter sweep down. |
+| `render.audio.sounds.confirm` | — | `{ minIntervalMs: 250, notes: { hz: [523.25, 783.99], stepMs: 80, noteMs: 150, lastNoteMs: 360, attackMs: 4, volume: 0.24 } }` | Play: a rising fifth. |
+| `render.audio.sounds.launch` | — | `{ minIntervalMs: 60, noise: { freq: 420, freqEnd: 1800, q: 1.2, attackMs: 50, ms: 190, volume: 0.34 } }` | Soft whoosh as a unit takes off. |
+| `render.audio.sounds.pew` | — | `{ minIntervalMs: 45, pitchJitter: 0.07, tone: { freq: 1300, freqEnd: 480, attackMs: 2, ms: 85, volume: 0.07 } }` | Quiet, quick shot; jitter keeps repeats from sounding identical. |
+| `render.audio.sounds.pop` | — | `{ minIntervalMs: 40, combo: true, tone: { freq: 900, freqEnd: 220, attackMs: 1, ms: 70, volume: 0.2 }, click: { freq: 3500, q: 0.7, attackMs: 1, ms: 14, volume: 0.08 } }` | Crisp break: the loudest board sound, rising with the combo. |
+| `render.audio.sounds.tick` | — | `{ minIntervalMs: 55, tone: { freq: 2200, freqEnd: 2000, attackMs: 1, ms: 28, volume: 0.05 } }` | Barely there, so it never masks the pop. |
+| `render.audio.sounds.unitPop` | — | `{ minIntervalMs: 60, tone: { freq: 620, freqEnd: 110, attackMs: 2, ms: 190, volume: 0.26 }, puff: { freq: 2000, freqEnd: 400, q: 0.7, attackMs: 2, ms: 110, volume: 0.12 } }` | Bigger, lower pop at capacity 0. |
+| `render.audio.sounds.park` | — | `{ minIntervalMs: 60, tone: { freq: 170, freqEnd: 70, attackMs: 3, ms: 130, volume: 0.28 }, puff: { freq: 600, freqEnd: 200, q: 0.7, attackMs: 2, ms: 45, volume: 0.06 } }` | Soft low thud into the slot. |
+| `render.audio.sounds.warn` | — | `{ minIntervalMs: 800, notes: { hz: [466.16, 466.16], stepMs: 150, noteMs: 100, attackMs: 6, volume: 0.1 } }` | Subtle two-beep warning at 0/5. |
+| `render.audio.sounds.rush` | — | `{ minIntervalMs: 1000, noise: { freq: 260, freqEnd: 3200, q: 1.1, attackMs: 450, ms: 700, volume: 0.3 }, tone: { freq: 220, freqEnd: 880, attackMs: 450, ms: 700, volume: 0.05 } }` | Rising swoosh that builds with the speed-up. |
+| `render.audio.sounds.fanfare` | — | `{ minIntervalMs: 1000, notes: { hz: [523.25, 659.25, 783.99, 1046.5], stepMs: 95, noteMs: 170, lastNoteMs: 600, attackMs: 4, volume: 0.2 } }` | Short cheerful arpeggio with the confetti. |
+| `render.audio.sounds.coin` | — | `{ minIntervalMs: 70, combo: true, tone: { freq: 1320, freqEnd: 1760, attackMs: 1, ms: 60, volume: 0.08 } }` | About 7 chirps per count-up, each a little higher. |
+| `render.audio.sounds.lose` | — | `{ minIntervalMs: 1000, notes: { hz: [392, 329.63, 261.63], stepMs: 200, noteMs: 220, lastNoteMs: 560, attackMs: 8, volume: 0.16 } }` | Soft descending notes, not a buzzer. |
 | `ui.anim.overshoot` / `soft` / `exit` | — | `'cubic-bezier(0.34, 1.56, 0.64, 1)'` / `'cubic-bezier(0.22, 1, 0.36, 1)'` / `'cubic-bezier(0.55, 0, 1, 0.45)'` | Pop past the target, glide in, accelerate out. |
 | `ui.anim.hudInMs` / `labelOutMs` / `labelInMs` / `labelShift` | — | `380` / `140` / `280` / `12` | HUD slide-in and the level label swap. |
 | `ui.anim.backdropInMs` / `backdropOutMs` / `cardInMs` / `cardOutMs` | — | `220` / `180` / `420` / `200` | Result overlay in and out. |
@@ -408,7 +491,10 @@ Values are copied from `src/config/Config.js`; "—" means the key is new in v3.
 | `ui.anim.buttonDownScale` / `buttonDownMs` / `buttonUpMs` | — | `0.9` / `70` / `280` | Squash on press, bounce on release. |
 | `ui.anim.flyMs` / `countUpMs` / `moneyPunchScale` / `moneyPunchMs` | — | `620` / `520` / `1.35` / `340` | "+$X" flight and the money count-up punch. |
 | `ui.anim.settingsInMs` / `settingsOutMs` / `settingsShift` | — | `260` / `180` / `28` | Settings panel slide and fade. |
-| `ui.text.effectsFull` / `effectsReduced` | — | `'Effects: full'` / `'Effects: reduced'` | Settings toggle labels. |
+| `ui.text.title` / `play` | — | `'BlockChompers'` / `'Play'` | Start screen copy. |
+| `ui.text.soundOn` / `soundOff` | — | `'Sound: on'` / `'Sound: off'` | Settings sound toggle labels. |
+| `ui.colors.titleBackdrop` / `title` | — | `'rgba(12, 12, 18, 0.86)'` / `'#ffd24a'` | Darker start backdrop with the first level faintly behind; gold title. |
+| `ui.sizes.startCardWidth` / `startTitleFont` / `playFont` / `playPadY` | — | `320` / `34` / `22` / `16` | Wider start card, big title and big Play button. |
 | `ui.timing.fade` | `0.15` | removed | Replaced by ui.anim (the old CSS fade). |
 | `debug.enabled` | — | `false` | Layout outlines and the debug panel. |
 | `debug.timeScale` | — | `1` | Slow motion for the simulation and effects. |

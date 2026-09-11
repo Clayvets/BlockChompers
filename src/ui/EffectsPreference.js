@@ -2,9 +2,9 @@
 export const EffectsMode = Object.freeze({ FULL: 'full', REDUCED: 'reduced' });
 
 /**
- * The player's "Effects: full / reduced" choice (presentation state, never game state). Reduced lowers particle and
- * confetti counts and removes shakes. main.js starts it from prefers-reduced-motion; the settings panel toggles it;
- * the renderer, the confetti layer and the UI subscribe.
+ * Effects level, full or reduced (presentation state, never game state). Reduced lowers particle and confetti counts
+ * and removes shakes. It has no visible option: main.js starts it from Config.render.vfx.effects and switches to
+ * reduced when the system asks for reduced motion; the renderer, the confetti layer and the UI subscribe.
  */
 export class EffectsPreference {
   #listeners = new Set();
