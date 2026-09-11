@@ -13,7 +13,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "export:models": "node tools/blender/export-models.mjs",
-    "validate:models": "node tools/glb/validate-models.mjs"
+    "validate:models": "node tools/glb/validate-models.mjs",
+    "process:ui": "node tools/ui/process-ui.mjs"
   },
   "devDependencies": {
     "vite": "^8.2.2",

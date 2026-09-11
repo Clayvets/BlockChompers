@@ -1,0 +1,42 @@
+{
+  "background": {
+    "source": "assets/ui/source/start_screen.jfif",
+    "output": "public/assets/ui/start_bg.webp",
+    "maxWidth": 1080,
+    "quality": 85
+  },
+  "button": {
+    "source": "assets/ui/source/button_green.jfif",
+    "output": "public/assets/ui/button_green.png",
+    "preview": "tools/ui/preview_button.png",
+    "keyThreshold": 20,
+    "edgeLumaMax": 140,
+    "darkThreshold": 70,
+    "supersample": 4,
+    "edgeRings": 3,
+    "padding": 6,
+    "maxWidth": 800,
+    "alphaFloor": 5,
+    "previewBackgrounds": ["#1b2330", "#f3eee4"],
+    "previewWidth": 560,
+    "previewZoom": 4,
+    "previewZoomBox": 0.3
+  },
+  "fontPreview": {
+    "output": "tools/ui/preview_fonts.png",
+    "titleSource": "assets/ui/source/start_screen.jfif",
+    "titleBox": [280, 140, 1340, 640],
+    "label": "Play",
+    "labelColor": "#ffffff",
+    "outlineColor": "#1f5843",
+    "outlineWidth": 0.12,
+    "labelCapHeight": 0.34,
+    "labelCenterY": 0.47,
+    "background": "#1b2330",
+    "candidates": [
+      { "name": "Titan One", "file": "tools/ui/.cache/fonts/TitanOne-Regular.ttf", "license": "OFL-1.1" },
+      { "name": "Lilita One", "file": "tools/ui/.cache/fonts/LilitaOne-Regular.ttf", "license": "OFL-1.1" },
+      { "name": "Bagel Fat One", "file": "tools/ui/.cache/fonts/BagelFatOne-Regular.ttf", "license": "OFL-1.1" }
+    ]
+  }
+}

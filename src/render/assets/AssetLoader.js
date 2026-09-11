@@ -6,12 +6,17 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
  * materials and textures stay). main.js awaits preload() before the start screen appears. A file that fails to load is
  * reported with a console error naming it and resolves to null, so the game still starts: StyledFactory then falls
  * back to the primitive for that model.
+ *
+ * It also loads the start screen's images (loadImage): each is decoded (img.decode()) before its promise resolves, so
+ * it paints on the first frame; a failure is logged the same way and resolves to null.
  */
 export class AssetLoader {
   /** @type {Map<string, Promise<object | null>>} */
   #pending = new Map();
   /** @type {Map<string, object>} */
   #loaded = new Map();
+  /** @type {Map<string, Promise<HTMLImageElement | null>>} */
+  #images = new Map();
 
   constructor({ loader = new GLTFLoader() } = {}) {
     this.loader = loader;
@@ -46,6 +51,23 @@ export class AssetLoader {
     return this.#loaded.get(url) || null;
   }
 
+  /** @returns {Promise<HTMLImageElement | null>} the decoded image, or null if it failed */
+  loadImage(url) {
+    if (!this.#images.has(url)) {
+      const image = new Image();
+      image.src = url;
+      const promise = image.decode().then(
+        () => image,
+        (error) => {
+          console.error(`AssetLoader: could not load image "${url}" (${error && error.message ? error.message : error})`);
+          return null;
+        },
+      );
+      this.#images.set(url, promise);
+    }
+    return this.#images.get(url);
+  }
+
   /** Release every cached GPU resource (full teardown only, e.g. a hot reload). */
   dispose() {
     for (const gltf of this.#loaded.values()) {
@@ -59,6 +81,7 @@ export class AssetLoader {
     }
     this.#loaded.clear();
     this.#pending.clear();
+    this.#images.clear();
   }
 }
 

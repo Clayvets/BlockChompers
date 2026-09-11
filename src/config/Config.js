@@ -541,6 +541,50 @@ export const Config = Object.freeze({
     }),
     /** Opacity of the settings button while it cannot be used (level over). */
     disabledOpacity: 0.35,
+    /**
+     * Styled start screen (Fish of Fortune): the key art with the painted title, and a Play button made from an image
+     * (both from tools/ui, npm run process:ui). main.js loads them and the label font before the UI mounts; if any of
+     * the three fails, the console names the file and the flat v3 start screen above (text.title, sizes.start*) is used.
+     * text.title stays the document title and the screen's aria-label; it is not drawn over the art.
+     */
+    startScreen: Object.freeze({
+      background: 'assets/ui/start_bg.webp',
+      button: 'assets/ui/button_green.png',
+      /** Self-hosted (OFL, public/assets/fonts/TitanOne-OFL.txt); fallback only matters if the font fails mid-session. */
+      font: Object.freeze({ family: 'Titan One', url: 'assets/fonts/TitanOne-Regular-latin.woff2', fallback: 'system-ui, sans-serif' }),
+      /**
+       * The art is contained in the viewport (all of it visible, never cropped or stretched). The space around it shows
+       * the same image cover-fitted, blurred (px) and darkened; scale hides the blur's soft edge. color shows first.
+       */
+      backdrop: Object.freeze({ blurPx: 18, brightness: 0.55, saturate: 1.1, scale: 1.1, color: '#0b2a3d' }),
+      playButton: Object.freeze({
+        /** Anchored to the displayed art: centre and width are fractions of the image rect (over the sand). */
+        centerX: 0.5,
+        centerY: 0.875,
+        widthPct: 0.46,
+        /** Label font size as a fraction of the button height; offsetY (em) centres the capitals on the pill. */
+        labelSize: 0.47,
+        labelOffsetY: -0.1,
+        labelColor: '#ffffff',
+        /** Outline stroke width in em (half of it shows outside the letters) and the soft drop shadow. */
+        outlineColor: '#1f5843',
+        outlineWidth: 0.17,
+        shadow: '0 0.09em 0.1em rgba(0, 0, 0, 0.45)',
+        /**
+         * The pill's own shadow on the art (CSS drop-shadow), replacing the baked one the processing removed. Lengths
+         * in em of the label size, so it scales with the button.
+         */
+        dropShadow: Object.freeze({ offsetY: 0.14, blur: 0.16, color: 'rgba(40, 26, 6, 0.5)' }),
+        hoverBrightness: 1.08,
+        /** Idle breathing: scale up to pulseScale and back once per pulsePeriodMs (off with reduced effects). */
+        pulseScale: 1.04,
+        pulsePeriodMs: 1600,
+        /** Keyboard focus ring (px). */
+        focusColor: '#ffffff',
+        focusWidth: 3,
+        focusOffset: 2,
+      }),
+    }),
   }),
 
   debug: Object.freeze({

@@ -615,12 +615,16 @@ v3 dropped it. The table lists every key v3 added or removed; v3 changed no exis
 
 ## Styled – Fish of Fortune
 
-Step 1 of the Fish of Fortune look is 3D only: the artist's fish replaces the triangle units, and the artist's canal
-replaces the flat track tiles. Everything else is exactly as in v3: the HUD, overlays, buttons, the "N/5" counter,
-capacity labels, blocks, slots, reserve tiles, background, effects and sound. `src/core`, the level files and their
-tests are unchanged, and so are `PrimitiveFactory`, `UIManager`, `VfxFactory` and `SfxBank`.
+The Fish of Fortune look arrives in steps:
+- **3D step 1:** the artist's fish replaces the triangle units, and the artist's canal replaces the flat track tiles.
+- **2D step 1:** the key art, with its painted title, and an image Play button replace the flat start screen.
 
-### Asset pipeline
+Everything else is exactly as in v3: the HUD, the settings, win and lose overlays, the "N/5" counter, capacity
+labels, blocks, slots, reserve tiles, background, effects and sound. `src/core`, the level files and their tests are
+unchanged, and so are `PrimitiveFactory`, `VfxFactory` and `SfxBank`. `UIManager` changed only for the start screen,
+and `AppFlow` still goes from MENU to PLAYING, with Play loading Level 1.
+
+### 3D asset pipeline
 
 **Source.** The artist's Blender 4.3 files stay outside the repo, and the export never modifies them:
 
@@ -685,6 +689,67 @@ buffer and accessor ranges, embedded images and their size, and no Draco. It pri
 animations, bounding box and size. `tools/blender/inspect_blend.py` inventories a .blend read-only, and
 `tools/blender/render_reference.py` renders the art from the game's top-down view for comparison.
 
+### 2D asset pipeline (start screen)
+
+**Source.** Two images, committed in `assets/ui/source/` so the processing can be rerun. The script only reads them.
+The start screen art and the button were AI-generated with Gemini.
+
+| File | Contents |
+|---|---|
+| `start_screen.jfif` | JPEG, 1536 x 2752 (24:43): the portrait key art, with the "BLOCK CHOMPERS" title painted in |
+| `button_green.jfif` | JPEG, 1984 x 2120: a glossy green pill (1123 x 353 px) on a grey textured studio background, with a baked shadow |
+
+**Command.** `npm run process:ui` runs `tools/ui/process_ui.py` (Python + Pillow) with the settings in
+`tools/ui/ui_assets.json`. The runner (`tools/ui/process-ui.mjs`) uses the `PYTHON` environment variable, else the
+project venv `tools/ui/.venv` (gitignored), else `python3` or `python`. One-time setup; any Python 3 works, and this
+machine used Blender 4.3's bundled Python 3.11:
+
+```bash
+"C:/Program Files/Blender Foundation/Blender 4.3/4.3/python/bin/python.exe" -m venv tools/ui/.venv
+```
+
+```bash
+tools/ui/.venv/Scripts/python -m pip install pillow
+```
+
+Running it again writes byte-identical files (Pillow 12.3.0). `npm run process:ui -- --font-preview` renders the
+font comparison sheet; it needs the candidate TTFs from github.com/google/fonts in `tools/ui/.cache/fonts/`
+(gitignored).
+
+**Background.** Converted to WebP at quality 85 and scaled down to `maxWidth` 1080 px, keeping its aspect (24:43).
+
+**Button background removal.** The grey background is textured and the JPEG bleeds colour into it, so a plain
+colour key would leave a fringe and cut the highlights. The script works from the pill's shape instead:
+1. **Key the outline.** A pixel counts when it is green and not light (G − max(R, B) > 20 and luma < 140) or very dark
+   (luma < 70), because the thin outline turns almost neutral black in places. The grey background and its baked
+   shadow are neither, so the shadow drops out with the background; the CSS drop shadow replaces it.
+2. **Fill the shape.** The pill is convex, so its matte is the convex hull of those pixels, drawn at 4x and averaged
+   down. That gives a smooth, anti-aliased outline, and every pixel inside is opaque, so the glossy highlights (some
+   reach the edge) stay intact.
+3. **Remove the fringe.** Each pixel of the outermost opaque ring takes the per-channel minimum of itself and its inner
+   neighbours; the outline is darker than both sides, so this only removes the background's grey. The
+   semi-transparent edge pixels take the colour of the nearest opaque ones, the art's own dark outline, so no grey or
+   pale fringe remains.
+4. **Crop and scale.** Cropped to the pill plus 6 px of padding, scaled to 800 px wide with premultiplied alpha, and
+   alpha below 5 is cleared (resampling ringing).
+
+**Output**
+
+| File | Size | Contents |
+|---|---|---|
+| `public/assets/ui/start_bg.webp` | 252.6 KB | 1080 x 1935, aspect 0.558 |
+| `public/assets/ui/button_green.png` | 220.2 KB | 800 x 257 RGBA, aspect 3.11 |
+| `public/assets/fonts/TitanOne-Regular-latin.woff2` | 10.5 KB | Titan One, Latin subset |
+| `public/assets/fonts/TitanOne-OFL.txt` | 4.3 KB | Its licence |
+| `tools/ui/preview_button.png` | 137.6 KB | The cutout over a dark and a light background, with two corners zoomed 4x |
+| `tools/ui/preview_fonts.png` | 487.7 KB | "Play" in the three candidate fonts next to the painted title |
+
+**Font.** The label uses Titan One by Rodrigo Fuenzalida, licensed under the SIL Open Font License 1.1 (licence text
+in `public/assets/fonts/TitanOne-OFL.txt`). Of the three OFL candidates (Titan One, Lilita One, Bagel Fat One), it is
+the closest to the painted title's weight and roundness and reads best at button size. Luckiest Guy was ruled out:
+it is Apache-2.0, not OFL. The `.woff2` is Google Fonts' Latin subset, downloaded once from fonts.gstatic.com and
+self-hosted, so the game runs offline and loads no CDN.
+
 ### In the game
 
 - **Loading.** `src/render/assets/AssetLoader.js` loads every GLB once, before the start screen appears; there is no
@@ -724,6 +789,26 @@ animations, bounding box and size. `tools/blender/inspect_blend.py` inventories 
   pixel outside the canal's band around the ring. The camera stays the strictly top-down orthographic one.
 - **Disposal.** Fish clones (skeleton, mixer) and track instances are disposed on restart and level change; the
   loaded GLBs stay cached.
+- **Start screen.**
+  - **Loading.** `main.js` awaits `src/ui/startScreenArt.js` together with the GLBs, before the UI mounts. It loads
+    both images through `AssetLoader.loadImage` (each decoded with `img.decode()`) and the font as a `FontFace` from
+    config, waiting on `document.fonts.load`, so the label never flashes in a fallback font. If any of the three fails,
+    the console names the file and the flat v3 start screen is shown instead.
+  - **Layout.** The art is contained in the viewport (`object-fit: contain`), so the whole image and its painted title
+    are always visible and never stretched. The space around it shows the same image cover-fitted, blurred and
+    darkened. The pure `src/ui/layout/computeStartScreenLayout.js` returns the image rect and the button rect. The
+    button's centre and width are fractions of the displayed art, so it stays on the same spot of the art at any size.
+    Its height follows the PNG's aspect, and the label size is a fraction of its height.
+  - **Play button.** A real `<button>` with `button_green.png` as its background and "Play" centred on it: white Titan
+    One with a dark green outline (`-webkit-text-stroke` behind the letters via `paint-order`), a soft text shadow and a
+    CSS drop shadow under the pill.
+    - It breathes while idle (a small scale loop, off with reduced effects), brightens on hover, and squashes on
+      pointerdown and bounces on release with the v3 button animation.
+    - It is focused on show, so Enter and Space play at once. Its focus ring appears once the keyboard is used.
+    - Play runs the v3 flow: the PLAY cue inside the click (the AudioContext starts there), the start screen's exit
+      animation, then Level 1.
+  - **Text title.** `ui.text.title` is no longer drawn over the art: it is the document title and the start screen's
+    `aria-label`.
 
 ### New config keys
 
@@ -745,14 +830,46 @@ animations, bounding box and size. `tools/blender/inspect_blend.py` inventories 
 | `render.lighting.hemisphere` | `{ sky: 0xa1bfd9, ground: 0x8198b1, intensity: 1 }` | Fish_Rail.blend's world (0.07, 0.1, 0.14) plus its blue fill light from above. |
 | `render.lighting.directional` | `{ color: 0xfffdf6, intensity: 4.2, position: [-0.161, 0.641, 0.751] }` | Fish_Rail.blend's sun: 4.2 W/m², warm, from the south and above. |
 
+Start screen (`ui.startScreen`; the flat v3 fallback keeps its `ui.text`, `ui.colors` and `ui.sizes` keys):
+
+| Config key | Value | Why |
+|---|---|---|
+| `ui.startScreen.background` / `button` | `'assets/ui/start_bg.webp'` / `'assets/ui/button_green.png'` | The processed images. |
+| `ui.startScreen.font` | `{ family: 'Titan One', url: 'assets/fonts/TitanOne-Regular-latin.woff2', fallback: 'system-ui, sans-serif' }` | The self-hosted label font. |
+| `ui.startScreen.backdrop` | `{ blurPx: 18, brightness: 0.55, saturate: 1.1, scale: 1.1, color: '#0b2a3d' }` | The blurred, darkened copy around the art; scale hides the blur's soft edge, and color shows before the image paints. |
+| `ui.startScreen.playButton.centerX` / `centerY` / `widthPct` | `0.5` / `0.875` / `0.46` | On the sand, between the block stack and the bottom props, clear of the title and the fish. |
+| `ui.startScreen.playButton.labelSize` / `labelOffsetY` | `0.47` / `-0.1` | Titan One's capitals at 34% of the button height (its caps are 0.72 em), centred on the pill. |
+| `ui.startScreen.playButton.labelColor` / `outlineColor` / `outlineWidth` | `'#ffffff'` / `'#1f5843'` / `0.17` | White label, the pill's dark rim green as the outline; the stroke width is in em, and half of it shows. |
+| `ui.startScreen.playButton.shadow` | `'0 0.09em 0.1em rgba(0, 0, 0, 0.45)'` | Soft text shadow, like the title's depth. |
+| `ui.startScreen.playButton.dropShadow` | `{ offsetY: 0.14, blur: 0.16, color: 'rgba(40, 26, 6, 0.5)' }` | The pill's shadow on the sand, in em, so it scales with the button. |
+| `ui.startScreen.playButton.hoverBrightness` | `1.08` | Hover brightens the pill and the label. |
+| `ui.startScreen.playButton.pulseScale` / `pulsePeriodMs` | `1.04` / `1600` | The idle breathing. |
+| `ui.startScreen.playButton.focusColor` / `focusWidth` / `focusOffset` | `'#ffffff'` / `3` / `2` | The keyboard focus ring (px). |
+
 ### Checks
 
-- **Tests.** 257 headless tests, 21 new:
+- **Tests.** 285 headless tests. The 3D step added 21:
   - `computeTrackPieces`: every ring cell covered once with corners in the 4 corners on every level, rims outward,
     headings along core Track travel for cw and ccw, and the chevron loop.
   - The exported pieces placed side by side: identical top surfaces across every joint, with no step and no hole.
   - The size normalisation.
   - GLB validation of every exported file.
+
+  The start screen added 28:
+  - `computeStartScreenLayout` on portrait, square and landscape viewports: the art fits inside the viewport, keeps
+    its aspect and is centred; the button stays at the same relative spot and inside the art, even for edge or
+    oversized settings; the label scales with the button.
+  - `startScreenArt.js` with stand-in loaders: each failed image or font gives the v3 fallback and a console error
+    naming the file.
+  - `src/ui/layout` joins `src/core` and `src/config` in the architecture test: no DOM, Three.js, clock or randomness.
+- **Start screen.** Checked in the browser at 390 x 844, 768 x 1024 and 1920 x 1080. The title is fully visible and
+  the button's centre sits at (0.500, 0.875) of the art at every size: 179 x 58 px on the phone, 263 x 84 px on the
+  tablet, 277 x 89 px on the desktop.
+  - Mouse and touch pointers squash and bounce the button, and a click plays: the AudioContext starts inside it, the
+    exit animation runs and Level 1 loads with the HUD, board, slots and reserve exactly as before.
+  - Hiding `start_bg.webp` brought up the flat v3 start screen, with a console error naming the file.
+  - The in-app browser could not send a real Enter or Space key, so keyboard activation was checked up to the focused
+    `<button>` receiving the keys unblocked; the browser turns those keys into its click.
 - **Performance.** Carrot, desktop browser, 765 x 599 canvas. One script drives both factories the same way: it
   launches a unit whenever fewer than five are moving and measures 600 frames after 120 warm-up frames.
 
@@ -795,3 +912,9 @@ animations, bounding box and size. `tools/blender/inspect_blend.py` inventories 
   overlapped too, by more on Panda and Carrot.
 - **Fish cost.** On Carrot, the 25 skinned fish about double the time the GPU still needs once a frame is submitted
   (see Performance). Idle fish in the reserve and slots still animate and upload their skeletons every frame.
+- **Blurred bands on wide screens.** The art is 24:43, so on a 16:9 desktop the blurred copy fills about two thirds of
+  the width.
+- **Latin-only font.** The self-hosted Titan One covers Google Fonts' Latin subset only; other characters fall back to
+  the system font.
+- **Busy sand.** The Play button covers the key, a pink cube and the edge of the treasure chest in the art.
+- **Focus ring timing.** Browsers that ignore `focus({ focusVisible: false })` show the ring from the start.

@@ -3,15 +3,25 @@ import { GamePhase } from '../core/GameManager.js';
 import { AppState } from '../app/AppFlow.js';
 import { Cues } from '../app/Cues.js';
 import { TweenScheduler } from '../render/anim/TweenScheduler.js';
+import { computeStartScreenLayout } from './layout/computeStartScreenLayout.js';
 
 const kebab = (key) => key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
 const now = () => globalThis.performance.now();
+const place = (el, { x, y, width, height }) => {
+  el.style.left = `${x}px`;
+  el.style.top = `${y}px`;
+  el.style.width = `${width}px`;
+  el.style.height = `${height}px`;
+};
 
 /**
- * Flat DOM UI (plain elements, solid colours, system font; no images, icon fonts or dependencies), with juice:
- *   start    -- start screen while the app flow is in MENU (page load): the game title and a big Play button, with the
- *               HUD hidden. Play plays the exit animation, then starts the flow (AppFlow.play: Level 1 loads and the
- *               HUD slides in).
+ * Flat DOM UI (plain elements, solid colours, system font; no icon fonts or dependencies), with juice:
+ *   start    -- start screen while the app flow is in MENU (page load), with the HUD hidden. Styled (Fish of Fortune,
+ *               Config.ui.startScreen) when main.js passes its loaded art: the key art with the painted title, contained
+ *               in the viewport over a blurred copy of itself, and an image Play button anchored to the art
+ *               (layout/computeStartScreenLayout.js) that breathes while idle. Otherwise the flat v3 screen: the game
+ *               title and a big Play button on a card. Play plays the exit animation, then starts the flow
+ *               (AppFlow.play: Level 1 loads and the HUD slides in).
  *   bar      -- settings button, "Level N", money. Slides in at every level start; the level label swaps with a
  *               slide; the money counts up with a punch when the "+$X" reward label lands on it.
  *   settings -- panel shown while paused (Resume, Restart level, Sound on/off); slides and fades in and out.
@@ -45,9 +55,11 @@ export class UIManager {
    * @param {{ root: HTMLElement, eventBus: object, gameManager: object, config?: object,
    *           flow?: import('../app/AppFlow.js').AppFlow, effects?: import('./EffectsPreference.js').EffectsPreference,
    *           sound?: import('./SoundPreference.js').SoundPreference, cues?: import('../app/Cues.js').CueBus,
+   *           startArt?: { background: HTMLImageElement, button: HTMLImageElement } | null,
    *           hooks?: { onWinShown?: Function, onResultClosed?: Function } }} deps
+   *   startArt: the styled start screen's decoded images (startScreenArt.js); null keeps the flat v3 start screen.
    */
-  constructor({ root, eventBus, gameManager, config = gameManager.config, flow = null, effects = null, sound = null, cues = null, hooks = {} }) {
+  constructor({ root, eventBus, gameManager, config = gameManager.config, flow = null, effects = null, sound = null, cues = null, startArt = null, hooks = {} }) {
     this.root = root;
     this.eventBus = eventBus;
     this.gameManager = gameManager;
@@ -56,6 +68,7 @@ export class UIManager {
     this.effects = effects;
     this.sound = sound;
     this.cues = cues;
+    this.startArt = startArt;
     this.hooks = hooks;
   }
 
@@ -69,6 +82,7 @@ export class UIManager {
     if (this.#els) return;
     const { text } = this.config.ui;
     this.#publishTokens();
+    this.root.ownerDocument.title = text.title;
 
     const bar = this.#make('div', 'bar');
     const settingsButton = this.#button('icon-button', '', () => this.gameManager.pause());
@@ -88,9 +102,7 @@ export class UIManager {
     const reward = this.#make('div', 'card-reward');
     result.title.after(reward);
     result.reward = reward;
-    // Play sounds its own confirm (the PLAY cue), not the tap.
-    const start = this.#modal(text.title, [['button button-play', text.play, () => this.#onPlay(), false]]);
-    start.root.classList.add('modal-start');
+    const start = this.startArt ? this.#styledStart(this.startArt) : this.#flatStart();
     const fly = this.#make('div', 'fly-label');
     fly.hidden = true;
 
@@ -153,17 +165,90 @@ export class UIManager {
     if (this.#changed('playing', playing)) settingsButton.disabled = !playing;
   }
 
+  /** Viewport size changed: the styled start screen re-anchors its art and Play button (main.js calls it on resize). */
+  resize() {
+    if (this.#els) this.#layoutStart();
+  }
+
   #inMenu() {
     return Boolean(this.flow) && this.flow.state === AppState.MENU;
   }
 
-  /** Start screen: the same entrance as the win card (backdrop, card pop with overshoot, staggered title and button). */
+  /** Flat v3 start screen: the game title and the Play button on a card. */
+  #flatStart() {
+    const { text } = this.config.ui;
+    // Play sounds its own confirm (the PLAY cue), not the tap.
+    const start = this.#modal(text.title, [['button button-play', text.play, () => this.#onPlay(), false]]);
+    start.root.classList.add('modal-start');
+    start.items = [start.title, start.buttons[0]];
+    return start;
+  }
+
+  /**
+   * Styled start screen: the backdrop (the art again, cover-fitted, blurred and darkened), the art itself as the card
+   * (its painted title replaces the text title, which stays the aria-label), and the Play button: an anchor placed on
+   * the art, a pulse wrapper that breathes, and the button with the v3 press and release. Each layer owns one transform.
+   */
+  #styledStart(art) {
+    const { text } = this.config.ui;
+    const root = this.#make('div', 'modal start-styled');
+    root.hidden = true;
+    root.setAttribute('role', 'dialog');
+    root.setAttribute('aria-label', text.title);
+    const backdrop = this.#make('div', 'start-backdrop');
+    backdrop.style.backgroundImage = `url("${art.background.src}")`;
+    const card = this.#make('div', 'start-art');
+    const image = art.background;
+    image.className = 'start-art-image';
+    image.alt = '';
+    image.draggable = false;
+    const anchor = this.#make('div', 'start-play-anchor');
+    const pulse = this.#make('div', 'start-play-pulse');
+    // Play sounds its own confirm (the PLAY cue), not the tap.
+    const button = this.#button('start-play', '', () => this.#onPlay(), false);
+    button.style.backgroundImage = `url("${art.button.src}")`;
+    button.append(this.#make('span', 'start-play-label', text.play));
+    pulse.append(button);
+    anchor.append(pulse);
+    card.append(image, anchor);
+    root.append(backdrop, card);
+    return { root, card, title: null, buttons: [button], items: [anchor], anchor, pulse, art };
+  }
+
+  /** Styled start screen: place the art (contained in the viewport) and the Play button anchored to it. */
+  #layoutStart() {
+    const start = this.#els.start;
+    if (!start.art) return;
+    const { background, button } = start.art;
+    const layout = computeStartScreenLayout(
+      { width: this.root.clientWidth, height: this.root.clientHeight },
+      { background: { width: background.naturalWidth, height: background.naturalHeight },
+        button: { width: button.naturalWidth, height: button.naturalHeight } },
+      this.config.ui.startScreen,
+    );
+    place(start.card, layout.image);
+    place(start.anchor, { ...layout.button, x: layout.button.x - layout.image.x, y: layout.button.y - layout.image.y });
+    start.buttons[0].style.fontSize = `${layout.labelSize}px`;
+  }
+
+  /**
+   * Start screen: the same entrance as the win card (backdrop, card pop with overshoot, then the title and button one
+   * after another; the styled screen's card is the art and its only item the button). The styled button then breathes.
+   */
   #showStart() {
     const a = this.config.ui.anim;
     const start = this.#els.start;
     start.root.hidden = false;
-    this.#enterOverlay(start, [start.title, start.buttons[0]], a.cardFromScale, a.overshoot);
-    start.buttons[0].focus();
+    this.#layoutStart();
+    this.#enterOverlay(start, start.items, a.cardFromScale, a.overshoot);
+    // Focused so Enter / Space play at once; on the art, the focus ring waits for keyboard use (:focus-visible).
+    start.buttons[0].focus(start.art ? { focusVisible: false } : undefined);
+    if (start.pulse && !(this.effects && this.effects.reduced)) {
+      const p = this.config.ui.startScreen.playButton;
+      this.#animate(start.pulse, [{ transform: 'scale(1)' }, { transform: `scale(${p.pulseScale})` }], p.pulsePeriodMs / 2,
+        'ease-in-out', a.cardInMs * 0.35 + (start.items.length - 1) * a.itemStaggerMs + a.itemInMs, false, true,
+        { direction: 'alternate', iterations: Infinity });
+    }
   }
 
   /**
@@ -175,6 +260,7 @@ export class UIManager {
     if (!this.#inMenu() || this.#starting) return;
     this.#starting = true;
     this.#cue(Cues.PLAY);
+    if (this.#els.start.pulse) for (const running of this.#els.start.pulse.getAnimations()) running.cancel();
     this.#exitOverlay(this.#els.start, () => {
       this.#els.start.root.hidden = true;
       this.#starting = false;
@@ -395,13 +481,13 @@ export class UIManager {
 
   /**
    * Web Animations API helper (transform and opacity only). `track` counts it as an overlay animation for
-   * isAnimating(); `replace` cancels the element's running animations first.
+   * isAnimating(); `replace` cancels the element's running animations first; `timing` adds options (e.g. a loop).
    * @returns {Animation | null}
    */
-  #animate(el, keyframes, duration, easing, delay = 0, track = false, replace = true) {
+  #animate(el, keyframes, duration, easing, delay = 0, track = false, replace = true, timing = null) {
     if (!el || typeof el.animate !== 'function') return null;
     if (replace) for (const running of el.getAnimations()) running.cancel();
-    const anim = el.animate(keyframes, { duration, easing, delay, fill: 'both' });
+    const anim = el.animate(keyframes, { duration, easing, delay, fill: 'both', ...timing });
     if (track) {
       this.#busy += 1;
       let counted = true;
@@ -439,12 +525,25 @@ export class UIManager {
     return { root, card, title, buttons };
   }
 
-  /** Config.ui -> CSS custom properties on root (colours as-is, sizes in px). */
+  /** Config.ui -> CSS custom properties on root (colours as-is, sizes in px; the styled start screen as --ui-start-*). */
   #publishTokens() {
-    const { colors, sizes, disabledOpacity } = this.config.ui;
+    const { colors, sizes, disabledOpacity, startScreen } = this.config.ui;
     const { style } = this.root;
     for (const [key, value] of Object.entries(colors)) style.setProperty(`--ui-color-${kebab(key)}`, value);
     for (const [key, value] of Object.entries(sizes)) style.setProperty(`--ui-size-${kebab(key)}`, `${value}px`);
     style.setProperty('--ui-disabled-opacity', String(disabledOpacity));
+    const { font, backdrop, playButton: p } = startScreen;
+    style.setProperty('--ui-start-font', `"${font.family}", ${font.fallback}`);
+    style.setProperty('--ui-start-backdrop-color', backdrop.color);
+    style.setProperty('--ui-start-backdrop-filter', `blur(${backdrop.blurPx}px) brightness(${backdrop.brightness}) saturate(${backdrop.saturate})`);
+    style.setProperty('--ui-start-backdrop-scale', String(backdrop.scale));
+    style.setProperty('--ui-start-label-color', p.labelColor);
+    style.setProperty('--ui-start-label-offset', `${p.labelOffsetY}em`);
+    style.setProperty('--ui-start-outline', `${p.outlineWidth}em ${p.outlineColor}`);
+    style.setProperty('--ui-start-shadow', p.shadow);
+    style.setProperty('--ui-start-button-shadow', `drop-shadow(0 ${p.dropShadow.offsetY}em ${p.dropShadow.blur}em ${p.dropShadow.color})`);
+    style.setProperty('--ui-start-hover', `brightness(${p.hoverBrightness})`);
+    style.setProperty('--ui-start-focus', `${p.focusWidth}px solid ${p.focusColor}`);
+    style.setProperty('--ui-start-focus-offset', `${p.focusOffset}px`);
   }
 }

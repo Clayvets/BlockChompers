@@ -521,3 +521,70 @@ Visual check before reporting:
 - compare it with the in-game result on Level 1, Panda and Carrot;
 - report any visible difference in colour, scale or shading.
 
+=== 2026-09-11T09:45:18-05:00 | session 567fdf5c ===
+Task: Fish of Fortune styled version, 2D step 1: start screen UI ONLY. Import the 2D art and replace the v3 flat start screen with it.
+
+SCOPE (strict):
+- In scope: the start screen (background art, Play button, font) and the processing of those two images.
+- Out of scope, do NOT change: the HUD, win/lose/settings overlays, the slots counter, capacity labels, the board, the fish and track (3D), VFX and SFX. They keep their current look. AppFlow keeps its states (LOADING → MENU → PLAYING) and Play still loads Level 1.
+- src/core, the level files and the core tests must not change. Every new value lives in render config (render.ui.startScreen). Don't add npm dependencies without asking.
+
+Source images (never modify them):
+- assets/ui/source/start_screen.jfif: full portrait key art with the "BLOCK CHOMPERS" title already painted in.
+- assets/ui/source/button_green.jfif: a glossy green pill button on a grey textured background.
+
+STAGE 1 – Process the assets, then STOP for my approval:
+1) Write the processing script at tools/ui/process_ui.py (Python + Pillow; if Pillow is missing, ask me before installing anything). Add an npm script "process:ui". Write scripts as files, never as long inline commands.
+2) Background: convert to public/assets/ui/start_bg.webp (quality ~85) at the original resolution, or 1080 px wide if larger. Report dimensions, aspect ratio and file size.
+3) Button: remove the grey background so the pill is on a transparent background.
+   - Clean anti-aliased edges with no grey fringe; the glossy highlights must stay intact.
+   - Drop the baked shadow; the shadow is added in CSS instead (filter: drop-shadow, values in config).
+   - Crop tightly to the pill with a few pixels of padding and export public/assets/ui/button_green.png.
+   - Render a preview of the cutout over a dark and a light background at tools/ui/preview_button.png.
+4) Font: the "Play" label must be white and use a chunky, rounded, bubbly display font similar to the title.
+   - Propose 3 OFL-licensed candidates (for example Lilita One, Titan One, Luckiest Guy).
+   - Render "Play" in each one in white with a dark outline, next to a crop of the title, into tools/ui/preview_fonts.png. Recommend one.
+   - Self-host it: download the .woff2 into public/assets/fonts/ with its license file. No CDN links, because the game must run locally.
+5) Report the previews, the sizes and the font recommendation, then STOP.
+
+STAGE 2 – Integration (after approval):
+1) Layout:
+   - The background art is shown fully inside the portrait design frame with object-fit: contain, so the painted title is never cropped.
+   - On wider or taller viewports, fill the extra space with a blurred, darkened copy of the same image (values in config), never with stretching.
+   - Don't render the old text title on top of the art. Keep render.ui.titleText only for the document title and the aria-label.
+2) Play button:
+   - A real <button> element with button_green.png as its background, keeping the image's aspect ratio, and the label "Play" centered on it.
+   - Label: the chosen font, color #FFFFFF, a dark green outline (-webkit-text-stroke with paint-order, or layered text-shadow) and a soft drop shadow, so it reads like the title. Size scales with the button.
+   - Position and width are percentages of the displayed image rect (render.ui.startScreen.playButton {centerX, centerY, widthPct}), so the button stays anchored to the art at any viewport size. Place it in the lower part over the sand, without covering the title or the fish; report the values you chose.
+   - Put the anchoring math in a pure function src/ui/layout/computeStartScreenLayout.js (no DOM): (viewport, imageSize, config) → image rect and button rect.
+   - States: idle breathing pulse (subtle scale), hover brighten, pointerdown squash and release bounce, :focus-visible ring and keyboard activation (Enter/Space). Reuse the existing v3 tween helper, the button tap SFX and the start screen enter/exit animations.
+   - Clicking Play: the same flow as v3 (AudioContext resume, exit animation, load Level 1).
+3) Loading:
+   - Preload start_bg.webp and button_green.png with the existing AssetLoader, calling img.decode().
+   - Wait for the font with document.fonts.load before showing the start screen, so the label never flashes in a fallback font.
+   - If an asset fails, log a clear console error naming the file and fall back to the v3 flat start screen.
+
+Tests (node, no DOM, no Three.js):
+- computeStartScreenLayout: the image rect fits inside the viewport and keeps its aspect; the button rect stays at the same relative position inside the image across portrait, square and landscape viewports; the button never goes outside the image rect.
+- no-render-imports.test.js, all core tests and the build stay green.
+
+Check:
+- Start screen at 390×844, 768×1024 and 1920×1080: title fully visible, button anchored in the same spot on the art, label crisp and white in the chosen font.
+- Play works with mouse, touch and keyboard, and Level 1 loads.
+- The rest of the UI and the game look exactly as before this step.
+
+README: in the "Styled – Fish of Fortune" section, add the 2D asset pipeline (source images, "process:ui", outputs, background removal approach), the font with its license, the credit that the start screen art and button were AI-generated with Gemini, and the new config keys.
+
+Report the chosen font, the button position values and file sizes, and propose a commit message.
+
+=== 2026-09-11T10:14:08-05:00 | session 567fdf5c ===
+Confirmed. Proceed with Stage 2.
+
+1) Loading: agreed. No LOADING state. Keep AppFlow as MENU → PLAYING, and in main.js await the images (img.decode()) and the font (document.fonts.load) before the UI mounts, the same way the 3D models are awaited. If an asset fails, log the file name and fall back to the v3 flat start screen.
+
+2) Config: use the existing structure. Put the new keys under ui.startScreen, and keep ui.text.title for the document title and the aria-label. Don't create render.ui. Use ui.startScreen wherever my prompt said render.ui.startScreen, including the README table.
+
+3) Sources: yes, commit the two source JPEGs in assets/ui/source/ so "process:ui" can be rerun. They also belong in /assets in the final deliverable. The processed files in public/assets/ui/ are committed too.
+
+4) Font and button: Titan One approved; self-host the .woff2 with its OFL license file. 800 px approved as the exported PNG width. On screen, the button size still comes from ui.startScreen.playButton.widthPct relative to the image rect, not from the PNG's pixel size.
+

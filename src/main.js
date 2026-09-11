@@ -15,6 +15,7 @@ import { ConfettiLayer } from './render/vfx/ConfettiLayer.js';
 import { AudioManager } from './audio/AudioManager.js';
 import { InputManager } from './input/InputManager.js';
 import { UIManager } from './ui/UIManager.js';
+import { loadStartScreenArt } from './ui/startScreenArt.js';
 import { EffectsPreference, EffectsMode } from './ui/EffectsPreference.js';
 import { SoundPreference } from './ui/SoundPreference.js';
 
@@ -46,9 +47,14 @@ const levelColors = (levelId) => {
 };
 
 // Fish of Fortune look: every GLB is loaded once before the start screen appears (no loading screen; a file that fails
-// logs an error and its primitive is used instead). StyledFactory replaces only the units and the track.
+// logs an error and its primitive is used instead). StyledFactory replaces only the units and the track. The styled
+// start screen's images (decoded) and label font are awaited the same way; if one fails, the console names it and the
+// flat v3 start screen is used.
 const assets = new AssetLoader();
-await assets.preload(StyledFactory.assetUrls(config));
+const [, startArt] = await Promise.all([
+  assets.preload(StyledFactory.assetUrls(config)),
+  loadStartScreenArt(config.ui.startScreen, assets),
+]);
 const renderer = new Renderer({ canvas, config, cues, factory: new StyledFactory(config, assets) });
 const confetti = new ConfettiLayer({ canvas: fxCanvas, config, factory: new VfxFactory(config) });
 const audio = new AudioManager({ config, eventBus, cues });
@@ -62,6 +68,7 @@ const ui = new UIManager({
   effects,
   sound,
   cues,
+  startArt,
   hooks: {
     onWinShown: () => confetti.burst(levelColors(game.getSnapshot().levelId)),
     onResultClosed: () => confetti.stop(),
@@ -74,6 +81,7 @@ renderer.setViewportInsets({ top: config.ui.sizes.barHeight }); // keep the boar
 const resize = () => {
   renderer.resize(window.innerWidth, window.innerHeight);
   confetti.resize(window.innerWidth, window.innerHeight);
+  ui.resize();
 };
 resize();
 const unbinds = [

@@ -159,6 +159,73 @@
         padding: var(--ui-size-play-pad-y) var(--ui-size-button-pad-x);
         font-size: var(--ui-size-play-font);
       }
+      /* Styled start screen (Config.ui.startScreen, --ui-start-*): the key art contained in the viewport over a blurred,
+         darkened copy of itself. UIManager places the art and the Play button (layout/computeStartScreenLayout.js) and
+         sets the image URLs and the label size inline. */
+      #ui-root .start-styled {
+        background: var(--ui-start-backdrop-color);
+        overflow: hidden;
+      }
+      #ui-root .start-backdrop {
+        position: absolute;
+        inset: 0;
+        background-position: center;
+        background-size: cover;
+        filter: var(--ui-start-backdrop-filter);
+        transform: scale(var(--ui-start-backdrop-scale)); /* hides the blur's soft edge */
+      }
+      #ui-root .start-art,
+      #ui-root .start-play-anchor {
+        position: absolute;
+      }
+      #ui-root .start-art {
+        will-change: transform, opacity;
+      }
+      #ui-root .start-art-image {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        pointer-events: none;
+      }
+      #ui-root .start-play-pulse,
+      #ui-root .start-play {
+        width: 100%;
+        height: 100%;
+      }
+      #ui-root .start-play {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border-radius: 9999px;
+        background: transparent center / 100% 100% no-repeat;
+        font-family: var(--ui-start-font);
+        line-height: 1;
+        color: var(--ui-start-label-color);
+        -webkit-text-stroke: var(--ui-start-outline);
+        paint-order: stroke fill; /* the outline sits behind the letters, so they keep their full weight */
+        text-shadow: var(--ui-start-shadow);
+        filter: var(--ui-start-button-shadow); /* the pill's shadow on the art (the baked one was removed) */
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+      }
+      #ui-root .start-play-label {
+        white-space: nowrap;
+        transform: translateY(var(--ui-start-label-offset));
+      }
+      #ui-root .start-play:focus {
+        outline: none;
+      }
+      #ui-root .start-play:focus-visible {
+        outline: var(--ui-start-focus);
+        outline-offset: var(--ui-start-focus-offset);
+      }
+      @media (hover: hover) {
+        #ui-root .start-play:hover {
+          filter: var(--ui-start-button-shadow) var(--ui-start-hover);
+        }
+      }
     </style>
   </head>
   <body>

@@ -6,9 +6,10 @@ import { fileURLToPath } from 'node:url';
 /**
  * Enforces the layering rule: the logic layer must be runnable (and testable) without Three.js,
  * a DOM, a clock or randomness. Comments are stripped before matching so docs may mention these.
+ * src/ui/layout holds the UI's pure layout math (the start screen's anchoring), held to the same rule.
  */
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
-const PURE_DIRS = ['src/core', 'src/config'];
+const PURE_DIRS = ['src/core', 'src/config', 'src/ui/layout'];
 
 const FORBIDDEN = [
   { name: "static import of 'three'", re: /from\s+['"]three(\/|['"])/ },
@@ -34,7 +35,7 @@ function stripComments(src) {
   return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 }
 
-describe('layering: src/core and src/config are pure', () => {
+describe('layering: src/core, src/config and src/ui/layout are pure', () => {
   const files = PURE_DIRS.flatMap((dir) => walk(join(ROOT, dir)));
 
   it('finds the pure modules', () => {
