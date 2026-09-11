@@ -119,3 +119,39 @@ These grids are much larger than the other levels. Check that they fit the scree
 Tests: headless WIN runs for Panda and Carrot with scripted launch orders; both levels pass validation; the progression order is Level 1 → Panda → Carrot; winning Level 3 adds the reward exactly once and loads Level 1; a second cycle works. Keep npm test green and the build clean.
 Update the README v1 section (levels list and new Config keys). Report the reserves you chose, any mismatch you found, and a proposed commit message.
 
+=== 2026-09-11T01:07:53-05:00 | session 567fdf5c ===
+Task: rewrite the "v1 – Primitive" section of README.md so it matches the current state of the game. The assignment defines v1 as: "gameplay matches the reference video using primitives only (boxes/spheres/planes). Win state included." Replace the existing v1 section, and leave "v2 – Feel" and "v3 – Polish" as empty headings.
+
+Sources: read CLAUDE.md, src/config/Config.js, src/core/levels/, the git log and /ai_logs so the section describes what actually exists. Don't invent features or values. If something is unclear, ask me instead of guessing.
+
+The section must have 3 required subsections:
+
+1) What changed: what v1 built, in the order it was built.
+- Core mechanics: grid ingested from 2D arrays, one-way perimeter track, units that fire inward at matching colors, a reserve of 4 columns, 5 active slots, win and lose.
+- Interaction rules: only the reserve front row and parked units are pickable; the reserve shifts up one by one; parked units can be relaunched until their capacity reaches 0.
+- Bug fixes, each with its cause: unbalanced levels (the capacity-per-color validation), units drifting off the track, and the missing lose condition (rules.loseMode).
+- Minimal UI: HUD with settings, level and money; "N/5" slots counter; win overlay with the reward; "Out of space" overlay with Retry; "Play again" after Level 3, looping back to Level 1.
+- Levels: the 3-level progression (Level 1, Panda, Carrot) built from pixel art, plus the levels kept outside the progression.
+- Tests: headless test coverage, including the scripted WIN runs.
+
+2) Why it improved feel: explain why these choices make v1 a readable, playable baseline. Cover:
+- the top-down orthographic camera and flat primitive colors;
+- per-level palettes and backgrounds for readability;
+- the fixed timestep and determinism;
+- the one-way track pacing and interpolation along track distance;
+- capacity labels and the slots counter as clear feedback;
+- overlay timing;
+- the strict core/render separation that lets v2, v3 and the Fish of Fortune reskin be config and presentation changes only.
+
+3) Exact values tuned: a Markdown table with the columns Config key | Value | Layer (core/render) | Why.
+- Copy every value exactly from Config.js.
+- Cover speeds, timings, track offset and entry spacing, slot and reserve limits, shots per lane pass, pick and relaunch rules, loseMode, rewards, reserve shift timings, palettes, backgrounds and UI sizes.
+
+Also include:
+- how to run: npm install, npm run dev, npm test;
+- controls;
+- a short architecture overview (core vs presentation, events, snapshots);
+- known limitations and deviations.
+
+Keep it concise, write in English only, and don't change any code. Report what you wrote and propose a commit message.
+
