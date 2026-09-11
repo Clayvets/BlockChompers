@@ -203,76 +203,100 @@ presentation only (`src/render` and the DOM UI in `src/ui`).
 
 ## v2 – Feel
 
-Goal: make v1 feel responsive and fluid without changing what wins or loses a level. Everything here builds on v1;
-the v1 section above still describes v1 as it was.
+Goal (from the assignment): improve responsiveness and timing, meaning input, easing and pacing. v2 changes how and
+when units move, not what wins or loses a level.
+
+**How to compare:** play both versions from the same clone. The dependencies did not change, so no reinstall is needed.
+
+```bash
+git checkout v1-primitive    # play v1
+npm run dev
+git checkout primitive-core  # back to v2
+```
 
 ### What changed
 
-1. **Launch straight to the track.** Tapping a front reserve unit sends it on a short flight to the track entry; it no
-   longer stops in a slot first. Slots only receive units that finish a lap with capacity left, and those park in the
-   leftmost free slot. The 5-slot limit now counts units moving plus units parked: a launch is refused when that sum is
-   5, and the "N/5" counter shows 5 minus that sum, so it still drops by 1 on every launch. A relaunched unit frees its
-   slot at once but keeps counting while it moves. Unit states are now reserve, launching (flying to the entry),
-   running, eating, returned (parked) and dead. The lose rules are unchanged.
-2. **Faster track.** Cruise speed went from 4 to 6.4 cells per second: +40% was the starting point, and +60% is where
-   the laps stopped feeling long. The bite pause shrank with it, from 0.15 to 0.1 s. Lanes are still scanned
-   discretely, so no lane is skipped at cruise or at final-rush speed.
-3. **Glide instead of stiff movement.** Units react on pointerdown, and the canvas no longer lets the browser handle
-   touch gestures. The launch flight lifts off the reserve and curves into the entry along the track, easing out over
-   260 ms. Units that must wait for the follow distance hold on their own path behind the entry instead of stacking. On
-   the track a unit starts at 2 cells per second and eases up to cruise over 400 ms; this is logic, deterministic and
-   tested. The return to a slot, the relaunch and the reserve shift use the same ease-out curve, and moving units hop
-   so they draw over the units they pass. Units turn smoothly toward their direction of travel, corners included; the
-   logical path is unchanged.
-4. **Final rush.** When the last reserve unit launches, every moving unit, and any unit relaunched afterwards, speeds
-   up to 1.8x over 700 ms with an ease-in-out ramp. It starts once per level, emits `FINAL_RUSH_STARTED` and is part
-   of the deterministic simulation.
-5. **Tests.** 205 headless tests, up from 185. New ones cover a launch that takes no slot and the moving-plus-parked
-   limit, the counter formula, parking in the leftmost free slot, acceleration reaching cruise at `units.accelMs`,
-   every lane scanned once per lap at cruise and rush speed, the rush starting exactly once when the reserve empties,
-   deep-equal snapshots for identical command scripts on the shipped config, and the render helpers for the flight,
-   the entry queue and the return glide. The v1 WIN and LOSE scenarios pass with the same step counts, because the
-   test base turns the new motion off; tests that described the old slot-first launch were rewritten.
+**Input**
+- A tap is still handled on `pointerdown`, as in v1, but the unit now leaves at once: it is already flying toward the
+  track in the next drawn frame, instead of waiting 0.25 s in a slot. It enters the track at the shared entry corner.
+- The canvas sets `touch-action: none`, so the browser never holds a tap back for panning or zooming.
+- Slots now only receive units that finish a lap with capacity left.
 
-### Why each change improves feel
+**Rules that came with it**
+- **Limit:** a launch is allowed only while units moving + units parked < 5 (`inventory.activeSlots`). Moving units
+  hold no slot.
+- **Counter:** "N/5" shows 5 - (moving + parked), so it still drops by 1 on every launch.
+- **Parking:** a unit that finishes a lap with capacity left parks in the leftmost free slot; the limit guarantees one.
+- **Relaunch:** a relaunched parked unit frees its slot at once but keeps counting as moving. If it still has capacity
+  after the lap, it parks again in the leftmost free slot.
+- Win and lose rules are unchanged.
 
-- **Responsiveness.** A tap now sends the unit toward the track on the very next frame, instead of parking it in a slot
-  for 0.25 s. Pointerdown plus disabled touch gestures means no browser delay between the finger and the unit. Slots
-  now only mean "parked", so they read as a warning, not as a waiting room.
-- **Flow.** Eased flights, returns and reserve shifts replace snaps and linear slides. The acceleration ramp removes the
-  jump to full speed at the entry, damped turning rounds the corners, and a burst of taps forms a neat queue.
-- **Pacing.** Laps are about 37% shorter: 11.6 s instead of 18.5 s on Level 1, and 20 s instead of 32 s on Carrot.
-  Played strictly one unit at a time, Level 1 drops from 3.3 to 2.1 minutes and Carrot from 12.1 to 7.6. The shorter
-  bite keeps v1's stop-and-go rhythm at the higher speed.
-- **End-of-level tension.** Once the reserve is empty the player can only watch. The final rush turns that wait into a
-  short sprint to the finish, and the eased ramp keeps it readable.
+**Easing**
+- **Launch curve:** the flight lifts off the reserve cell, curves across and meets the entry along the track, easing
+  out over 260 ms. Units waiting for the follow distance hold on their own path behind the entry instead of stacking.
+- **Acceleration:** a unit enters the track at 2 cells/s and eases up to cruise speed over 400 ms.
+- **Rotation:** units turn smoothly toward their direction of travel, corners included. The logical path is unchanged.
+- **Same easing everywhere:** one ease-out curve drives the launch, the relaunch, the return to a slot (v1 snapped) and
+  the reserve shift (v1 slid linearly). Flying and returning units hop, so they draw over the units they pass.
+
+**Pacing**
+- **Track speed:** 4 to 6.4 cells per second.
+- **Hit timing:** the pause per eaten block went from 0.15 to 0.1 s to match the new speed. Neither version draws
+  projectiles, so this pause is the only hit timing.
+- **Final rush:** when the last reserve unit launches, every moving unit, and any unit relaunched later, ramps up to
+  1.8x speed over 700 ms. It starts once per level and emits `FINAL_RUSH_STARTED`.
+
+**Tuning during v2**
+- The brief set +40% (5.6 cells/s) as the starting speed. v2 ships 6.4 (+60%) with the hit pause scaled to match.
+- v2 is a single commit, so the git log records no later fixes.
+
+### Why it improved feel
+
+- **Responsiveness.** In v1 a tap parked the unit in a slot for 0.25 s before it entered the track, so every tap felt
+  late and took a detour through the slot row. In v2 the unit is on its way in the frame after the tap, and slots only
+  hold parked units, so they read as a warning instead of a waiting room.
+- **Flow.** In v1 units started at full speed, jumped back to their slot and turned each corner in a single frame. In
+  v2 they curve in, pick up speed over 400 ms, glide into their slot and swing round corners, so motion reads as one
+  continuous glide.
+- **Pacing.** v1's loop was slow: a Level 1 lap took 18.5 s and a Carrot lap 32 s. In v2 they take 11.6 s and 20 s.
+  Played one unit at a time, Level 1 drops from 3.3 to 2.1 minutes and Carrot from 12.1 to 7.6.
+- **End-of-level tension.** In v1, once the reserve was empty, the player could only watch the last units crawl
+  round. The final rush turns that wait into a short sprint to the finish, and its eased ramp keeps it readable.
+- **Still deterministic and testable.** Acceleration and the final rush are game logic: each fixed step's speed comes
+  from whole-step counters and the pure polynomial curves in `src/core/easing.js`, with no clock or randomness.
+  Easing is presentation: the flight's duration is logic, but its curve, the return glide, the reserve shift and the
+  turning live only in the renderer, which reads snapshots and never changes the game. Tests show that acceleration
+  reaches cruise exactly at `units.accelMs`, that no lane is skipped at cruise or final-rush speed, that the rush
+  starts exactly once, and that identical command scripts give deep-equal snapshots. The renderer's placement helpers
+  are tested headless too, for 205 tests in all.
 
 ### Exact values tuned
 
-Values are copied from `src/config/Config.js`; "new" means the key did not exist in v1.
+Values are copied from `src/config/Config.js` at v1-primitive and on the current branch; "—" means the key is new in v2.
 
 | Config key | v1 value | v2 value | Why |
 |---|---|---|---|
-| `track.speed` | `4` | `6.4` | Cruise speed, cells/s. +40% was the starting point; +60% brings a Level 1 lap to 11.6 s. |
-| `timing.eatDuration` | `0.15` | `0.1` | Bite pause, scaled with the speed so a bite still takes about 60% of a cell's travel time. |
+| `inventory.activeSlots` | `5` | `5` | Same number, now a limit on units moving plus units parked; moving units hold no slot. |
+| `track.launchSpacing` | `1` | `1` | Same follow distance; a launching unit now waits for it at the entry, not in a slot. |
 | `timing.launchDelay` | `0.25` | removed | The wait in a slot before entering the track is gone. |
-| `timing.launchToEntryMs` | new | `260` | Flight from the reserve (or the slot) to the entry, ms: short, about as long as the old slot wait. |
-| `units.launchSpeed` | new | `2` | Speed on entering the track, cells/s, so the unit visibly picks up speed. |
-| `units.accelMs` | new | `400` | Time from entering the track to cruise speed. |
-| `units.accelEasing` | new | `'easeOutQuad'` | Quick pick-up that settles into cruise without a jolt. |
-| `rules.finalRushSpeedMultiplier` | new | `1.8` | Rush speed factor once the reserve is empty. |
-| `rules.finalRushRampMs` | new | `700` | Ramp time, so the rush never jumps. |
-| `rules.finalRushEasing` | new | `'easeInOutCubic'` | Gentle start and end of the ramp. |
-| `render.motionEasing` | new | `'easeOutCubic'` | One curve for launch, relaunch, return and reserve shift (v1: snaps and a linear shift). |
-| `render.launchLift` | new | `0.7` | Cells the flight rises off the reserve before turning, so it clears the other front units. |
-| `render.launchCurve` | new | `0.5` | How early the flight lines up with the track, as a fraction of its depth below the entry. |
-| `render.hopHeight` | new | `0.8` | Height of the hop, so a flying or returning unit draws over the units it passes. |
-| `render.returnToSlotMs` | new | `280` | Glide from the entry corner into the parking slot (v1: an instant jump). |
+| `timing.launchToEntryMs` | — | `260` | Flight from the reserve cell or the slot to the entry, ms; the unit moves from the first frame. |
+| `render.slotColors` | `{ free: 0x333333, occupied: 0x777777, blocked: 0xaa2222 }` | `{ free: 0x333333, blocked: 0xaa2222 }` | Moving units no longer hold a slot, so the occupied tint is gone. |
+| `units.launchSpeed` | — | `2` | Speed on entering the track, cells/s, so the unit visibly picks up speed. |
+| `units.accelMs` | — | `400` | Time from entering the track to cruise speed. |
+| `units.accelEasing` | — | `'easeOutQuad'` | Quick pick-up that settles into cruise without a jolt. |
+| `render.motionEasing` | — | `'easeOutCubic'` | One ease-out curve for launch, relaunch, return and reserve shift. |
+| `render.launchLift` | — | `0.7` | Cells the flight rises off the reserve before turning, so it clears the other front units. |
+| `render.launchCurve` | — | `0.5` | How early the flight lines up with the track, as a fraction of its depth below the entry. |
+| `render.hopHeight` | — | `0.8` | Rise at mid-move, so a flying or returning unit draws over the units it passes. |
+| `render.returnToSlotMs` | — | `280` | Glide from the entry corner into the parking slot, replacing v1's jump. |
 | `timing.returnDuration` | `0.4` | removed | Declared in v1 but never read; replaced by `render.returnToSlotMs`. |
-| `render.rotationDamping` | new | `18` | Turn rate per second: a turn is 90% done in about 130 ms (v1: instant). |
-| `render.reserveShiftMs` | `160` | `160` | Same length, now eased instead of linear. |
-| `render.reserveShiftStaggerMs` | `60` | `60` | Same stagger; the first shift now also waits for the departing unit. |
-| `render.slotColors.occupied` | `0x777777` | removed | Moving units no longer hold a slot. |
-| `inventory.activeSlots` | `5` | `5` | Same number, now a limit on units moving plus units parked. |
+| `render.reserveShiftMs` | `160` | `160` | Same time per cell, now eased instead of linear. |
+| `render.reserveShiftStaggerMs` | `60` | `60` | Same stagger; the first unit now also waits for the one that left. |
+| `render.rotationDamping` | — | `18` | Turn rate per second: a turn is 90% done in about 130 ms, instead of v1's instant snap. |
+| `track.speed` | `4` | `6.4` | Cruise speed, cells/s: +40% was the starting point; +60% brings a Level 1 lap from 18.5 to 11.6 s. |
+| `timing.eatDuration` | `0.15` | `0.1` | Pause per eaten block, the only hit timing, scaled with the speed: still about 60% of a cell's travel time. |
+| `rules.finalRushSpeedMultiplier` | — | `1.8` | Speed factor once the reserve is empty. |
+| `rules.finalRushRampMs` | — | `700` | Ramp time, so the rush never jumps. |
+| `rules.finalRushEasing` | — | `'easeInOutCubic'` | Gentle start and end of the ramp. |
 
 ## v3 – Polish

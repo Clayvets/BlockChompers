@@ -203,3 +203,33 @@ Don't change the v1 section.
 
 Report the final tuned values and propose a commit message.
 
+=== 2026-09-11T02:40:31-05:00 | session 567fdf5c ===
+Task: write the "v2 – Feel" section of README.md so it matches the current state of the game. The assignment defines v2 as: "improve responsiveness + timing (input, easing, pacing)." Replace any existing v2 content, don't change the v1 section, and leave "v3 – Polish" as an empty heading.
+
+Sources: read src/config/Config.js, the git log and diff since the v1-primitive tag, /ai_logs and the current tests, so the section describes what actually exists. To get the v1 values, read Config.js at the v1-primitive tag (git show v1-primitive:src/config/Config.js). Don't invent features or values. If something is unclear, ask me instead of guessing.
+
+The section must have 3 required subsections:
+
+1) What changed, grouped by input, easing and pacing:
+- Input: units react on pointerdown, in the same frame as the tap. Tapping launches a unit straight to the track instead of stopping at a slot first. Slots now only receive units that finish a lap with capacity left.
+- Rules that came with it: the 5-unit limit (moving + parked), the new "N/5" counter formula, and how relaunched parked units free their slot.
+- Easing: smooth launch curve to the track entry, acceleration to cruise speed, smooth rotation at corners, and the same easing style on return, relaunch and reserve shift.
+- Pacing: faster track speed, projectile timing adjusted to the new speed, and the final rush when the reserve is empty.
+- Any later tuning or fixes made during v2, according to the git log.
+
+2) Why it improved feel: for each change, explain the player-facing problem in v1 and how v2 solves it.
+- Responsiveness: v1's delay between the tap and the movement, and the detour through the slot.
+- Flow: v1's stiff starts and instant speed snaps versus v2's gliding motion.
+- Pacing: v1's slow, boring loop versus v2's faster track.
+- End-of-level tension: v1 dragged on while the last blocks were cleared; the final rush fixes that.
+- Explain why all of this stays deterministic and testable: acceleration and the final rush are logic, easing is presentation.
+
+3) Exact values tuned: a Markdown table with the columns Config key | v1 value | v2 value | Why.
+- Include every key that changed or was added in v2. Write "—" as the v1 value for new keys.
+- Cover: speedCellsPerSec, accelMs, launchToEntryMs, projectileTravelMs, returnToSlotMs, reserve shift timings, easing names, rotationDamping, finalRushSpeedMultiplier, finalRushRampMs, and any input or limit keys.
+- Copy every value exactly from Config.js.
+
+Also add a short "How to compare" note: git checkout v1-primitive to play v1, and the current branch to play v2.
+
+Keep it concise, write in English only, and don't change any code. Report what you wrote and propose a commit message.
+
