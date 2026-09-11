@@ -300,3 +300,61 @@ Values are copied from `src/config/Config.js` at v1-primitive and on the current
 | `rules.finalRushEasing` | — | `'easeInOutCubic'` | Gentle start and end of the ramp. |
 
 ## v3 – Polish
+
+### What changed
+
+1. **Fixed layout: UI scaling fix.** Cause: the camera fitted its frustum to each level's bounds (grid, track, slots
+   and reserve), so a bigger level zoomed the whole scene out. On Carrot the slots, reserve, units and capacity labels
+   shrank with the board; on a phone, reserve tap targets fell to about 12 px and label digits to 5 or 6 px. Fix: one
+   portrait design layout, `render.layout`, in design units. The camera fits it once per viewport and never refits on
+   a level change. Only the board, meaning the grid plus its track ring, scales: cellSize = min(boardRegion.w /
+   boardCols, boardRegion.h / boardRows, maxCellSize), and the board is centred in its region. Slots, reserve cells,
+   units, labels and the "N/5" counter keep the same size on every level, and a unit keeps its size from the reserve
+   to the track. On resize the whole design scales uniformly, with any extra space as margin. The math is a pure
+   function, `src/render/layout/computeLayout.js`, tested in Node. With `debug.enabled`, the renderer outlines the
+   regions and a small panel shows the level's cellSize.
+
+   | Level | Board incl. ring | cellSize | Cell on a 390 x 844 phone |
+   |---|---|---|---|
+   | Level 1 (Watermelon) | 20 x 19 | 0.46 | 17.9 px |
+   | Panda | 24 x 26 | 0.3833 | 14.9 px |
+   | Carrot | 25 x 41 | 0.2927 | 11.4 px |
+   | Starter | 7 x 5 | 0.75 (clamped) | 29.3 px |
+
+   On that phone a unit is 23 px, a label 18 px, a reserve cell 29 px and a slot 39 px on every level. Units are now
+   longer than a board cell on the bigger levels (about 2 cells on Carrot), so runners at the 1-cell follow distance
+   can overlap on the ring.
+
+### Exact values tuned
+
+Values are copied from `src/config/Config.js`; "—" means the key is new in v3. Layout values are design units: the
+design is 10 wide and 20 tall, and one unit is one slot.
+
+| Config key | v2 value | v3 value | Why |
+|---|---|---|---|
+| `render.layout.designWidth` | — | `10` | Width of the fixed portrait design. |
+| `render.layout.designHeight` | — | `20` | Height; 1:2 matches a phone below the HUD bar. |
+| `render.layout.boardRegion` | — | `{ x: 0.4, y: 0.4, w: 9.2, h: 12 }` | Where the board scales to fit; the margins leave room for units on the ring. |
+| `render.layout.slotsRegion` | — | `{ x: 0.4, y: 12.9, w: 9.2, h: 1 }` | Band for the 5 parking slots and the counter. |
+| `render.layout.reserveRegion` | — | `{ x: 0.4, y: 14.35, w: 9.2, h: 5.25 }` | 7 reserve rows, enough for Carrot's 25 units. |
+| `render.layout.slotSize` | — | `1` | Slot pitch; the tile is 90% of it. |
+| `render.layout.reserveCellSize` | — | `0.75` | Reserve pitch: 29 px tap targets on a 390 px wide phone. |
+| `render.layout.unitSize` | — | `0.6` | One unit size everywhere, reserve, slot and track. |
+| `render.layout.labelSize` | — | `0.45` | Capacity label height, readable at 3 digits. |
+| `render.layout.counter` | — | `{ x: 8.3, y: 13.4, height: 0.55 }` | "N/5" counter, right of the slot row. |
+| `render.layout.maxCellSize` | — | `0.75` | Cap for small boards; a unit is then 0.8 of a cell, as in v1. |
+| `debug.enabled` | — | `false` | Turns on the layout outlines and the cellSize panel. |
+| `debug.layoutColors` | — | `{ design: 0xffffff, boardRegion: 0x00e676, board: 0xffc400, slotsRegion: 0x00b0ff, reserveRegion: 0xff4081 }` | Outline colours. |
+| `debug.panel` | — | `{ right: 8, bottom: 8, padding: 6, font: '11px ui-monospace, monospace', color: '#ffffff', background: 'rgba(0, 0, 0, 0.65)' }` | Debug panel style, bottom right, clear of the reserve. |
+| `render.cellSize` | `1` | removed | Replaced by the per-level cellSize. |
+| `render.camera.padding` | `1` | removed | The design has its own margins. |
+| `render.inventory.gapBelowGrid` | `0.6` | removed | Replaced by the layout regions. |
+| `render.inventory.slotGap` | `0.2` | removed | Replaced by `render.layout.slotSize` and `reserveCellSize`. |
+| `render.inventory.slotsRowOffset` | `0.5` | removed | Replaced by `render.layout.slotsRegion`. |
+| `render.inventory.reserveRowOffset` | `2.1` | removed | Replaced by `render.layout.reserveRegion`. |
+| `render.label.worldSize` | `0.6` | removed | Replaced by `render.layout.labelSize`. |
+| `render.slotCounter.offsetX` | `1.4` | removed | Replaced by `render.layout.counter`. |
+| `render.slotCounter.offsetY` | `0` | removed | Replaced by `render.layout.counter`. |
+| `render.slotCounter.height` | `0.7` | removed | Replaced by `render.layout.counter`. |
+| `render.unitSize` | `0.8` | `0.8` | No longer drawn; kept because a core test compares `track.launchSpacing` with it. |
+| `render.launchLift` | `0.7` | `0.7` | Same value, now in design units instead of board cells. |

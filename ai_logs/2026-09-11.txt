@@ -233,3 +233,42 @@ Also add a short "How to compare" note: git checkout v1-primitive to play v1, an
 
 Keep it concise, write in English only, and don't change any code. Report what you wrote and propose a commit message.
 
+=== 2026-09-11T02:49:06-05:00 | session 567fdf5c ===
+Task: fix UI scaling. Right now the camera fits its frustum to the bounds of each level (grid + track + slots + reserve), so on large levels like Carrot the slots, reserve, units and labels shrink. The layout must be identical on every level; only the pixel-art board (grid + track) scales to fit its area. Presentation-only change: src/core, the level files and the core tests must not change.
+
+1) Fixed layout: define a portrait design layout in render config (render.layout), in world units:
+- designWidth and designHeight;
+- boardRegion, slotsRegion and reserveRegion as rects;
+- slotSize, reserveCellSize, unitSize, labelSize and the "N/5" counter position.
+The camera frustum is fitted once to this design layout and never refits on level change.
+
+2) Board scale per level:
+- On level load, compute cellSize = min(boardRegion.w / boardCols, boardRegion.h / boardRows), clamped to render.layout.maxCellSize so small levels don't blow up. boardCols and boardRows include the track and its offset.
+- Center the board inside boardRegion. The renderer maps logic cell units to world through this cellSize and board origin.
+- Blocks, empty tiles, track tiles and block-burst particles scale with cellSize.
+
+3) Constant-size elements: slots, reserve cells, triangles (in the reserve, in slots and on the track), capacity labels, projectiles, confetti and the whole DOM UI keep the same size on every level.
+- A triangle must not change size when it moves from the reserve to the track.
+- On the track it follows the scaled lane positions, but its mesh size stays unitSize.
+
+4) Pure layout module: put the math in src/render/layout/computeLayout.js as a pure function with no three and no DOM: (levelDims, layoutConfig, viewportAspect) → rects, cellSize and board origin. The Renderer and VFX only consume its result.
+
+5) Resize: on window resize, the whole design layout scales uniformly to fit the viewport, keeping aspect (portrait-first, extra space as margin). Relative sizes between the board, slots and reserve never change with the viewport, and resizing never depends on the level.
+
+6) Check every level: Level 1, Panda, Carrot and the levels outside the progression.
+- The board fits inside boardRegion without overlapping the slots, reserve or HUD.
+- Blocks stay readable on Carrot.
+- When debug.enabled, draw the layout region outlines and show cellSize in the debug panel.
+
+Tests (node, no Three.js) for computeLayout:
+- Slot, reserve and unit rects are deep-equal across all levels.
+- The board stays inside boardRegion for every level.
+- cellSize is smaller for bigger grids and clamped for small ones.
+- The board is centered.
+- Changing the viewport aspect scales everything uniformly.
+Keep no-render-imports.test.js, all core tests and the build green.
+
+README: add this fix to the "v3 – Polish" section under what changed (the per-level frustum fit was the cause), and add the new render.layout keys to its values table. Don't change the v1 or v2 sections.
+
+Report the layout values you chose and each level's cellSize, and propose a commit message.
+

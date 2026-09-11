@@ -6,6 +6,7 @@ import { countAvailableSlots } from '../core/InventoryManager.js';
 import { ease } from '../core/easing.js';
 import { trackDrawPosition, trackFromSnapshot } from './trackPlacement.js';
 import { HEADING, launchPath, flightProgress, flightPose, entryQueueBacks, returnPose } from './launchPlacement.js';
+import { computeLayout, fitView, boardPoint, slotPoint, reservePoint } from './layout/computeLayout.js';
 
 /**
  * The Three.js bridge. Reads snapshots, owns the scene graph, never mutates game state.
@@ -15,9 +16,12 @@ import { HEADING, launchPath, flightProgress, flightPose, entryQueueBacks, retur
  *                      units re-posed every frame (flight curve, entry queue, return glide, reserve shift, turning)
  *   bindEvents(bus) -- effects only (end-of-level background tint)
  *
- * All layout is computed in CELL units (x right, y down, origin = grid top-left) and converted once in
- * cellToWorld(). Runners are drawn exactly on the track path at their interpolated track distance
- * (trackPlacement.js); spacing between them only exists along the track (Config.track.launchSpacing).
+ * Layout: a fixed portrait design (Config.render.layout) in design units, which are world units on the x/z plane.
+ * computeLayout() (pure) gives every rect; the camera shows the whole design and never refits on a level change.
+ * Only the board scales: logic cell units map to world through the level's cellSize and board origin (boardToWorld).
+ * Slots, reserve cells, units and labels keep their render.layout size everywhere (designToWorld). Runners are drawn
+ * exactly on the track path at their interpolated track distance (trackPlacement.js); spacing between them only
+ * exists along the track (Config.track.launchSpacing).
  */
 export class Renderer {
   /** @type {Map<string, THREE.Mesh>} key 'row,col' */
@@ -35,7 +39,10 @@ export class Renderer {
   #signature = null;
   /** Resolved per-level colours (see #styleFor). */
   #style = null;
+  /** computeLayout() result for the loaded level (design / world units); see getLayout(). */
   #layout = null;
+  /** Debug outlines of the layout regions (Config.debug.enabled). */
+  #debugGroup = null;
   /** "N/5" available-slot counter sprite (render.slotCounter). */
   #slotCounter = null;
   /** The level Track rebuilt from the snapshot, used to place runners on the path. */
@@ -49,7 +56,7 @@ export class Renderer {
   #departures = new Map();
   /** Per-unit motion memory (see #motionFor): flight start and path, return start, last drawn point. */
   #motion = new Map();
-  /** Track entry point and heading (cell units), where every launch flight ends. */
+  /** Track entry point (world units) and heading, where every launch flight ends. */
   #entry = null;
   /** snapshot.launchSteps: whole steps of a launch flight. */
   #launchSteps = 0;
@@ -110,27 +117,27 @@ export class Renderer {
   }
 
   /**
-   * Fit the frustum to `bounds` (cell units) + render.camera.padding, preserving aspect; centre on them.
-   * @param {{ minX: number, maxX: number, minY: number, maxY: number }} [bounds]
+   * Fit the frustum to the design layout, once per viewport size: the whole design scaled uniformly into the band
+   * below the HUD (insets), centred, extra space as margin. It never depends on the level.
    */
-  fitCamera(bounds = this.#layout && this.#layout.bounds) {
-    if (!this.camera || !bounds) return;
-    const { cellSize, camera: cam } = this.config.render;
+  fitCamera() {
+    if (!this.camera) return;
+    const { layout, camera: cam } = this.config.render;
     const { width, height } = this.#size;
     const usable = Math.max(1, height - this.#insets.top - this.#insets.bottom);
-    const halfW0 = ((bounds.maxX - bounds.minX) * cellSize) / 2 + cam.padding;
-    const halfH0 = ((bounds.maxY - bounds.minY) * cellSize) / 2 + cam.padding;
-    const usableHalfH = Math.max(halfH0, (halfW0 * usable) / width);
-    const worldPerPx = (2 * usableHalfH) / usable;
+    const view = fitView(layout.designWidth, layout.designHeight, width / usable);
+    const worldPerPx = view.h / usable;
     const halfW = (width * worldPerPx) / 2;
     const halfH = (height * worldPerPx) / 2;
     Object.assign(this.camera, { left: -halfW, right: halfW, top: halfH, bottom: -halfH });
-    // Centre the bounds in the band between the insets: screen-up is world -z.
+    // Centre the view in the band between the insets: screen-up is world -z.
     const shift = ((this.#insets.top - this.#insets.bottom) / 2) * worldPerPx;
-    const centre = this.cellToWorld((bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2);
-    this.camera.position.set(centre.x, cam.height, centre.z - shift);
-    this.camera.lookAt(centre.x, 0, centre.z - shift);
+    const cx = view.x + view.w / 2;
+    const cz = view.y + view.h / 2 - shift;
+    this.camera.position.set(cx, cam.height, cz);
+    this.camera.lookAt(cx, 0, cz);
     this.camera.updateProjectionMatrix();
+    if (this.#layout) this.#layout = { ...this.#layout, view };
   }
 
   /**
@@ -142,42 +149,25 @@ export class Renderer {
     this.fitCamera();
   }
 
-  /** Level shape -> slot row, reserve grid and camera bounds, all in cell units. */
-  #computeLayout(snapshot) {
-    const { rows, cols } = snapshot.grid;
-    const { margin } = snapshot.track;
-    const { reserveCols, reserveRows } = snapshot.inventory;
-    const { inventory: inv, unitSize } = this.config.render;
-    const slotCount = snapshot.slots.length;
-    const pitch = 1 + inv.slotGap;
-    const cx = cols / 2;
-    // How far a unit (half its size) reaches beyond the ring centre line; runners are drawn on the line itself.
-    const reach = Math.max(0.5, unitSize / 2);
-    const panelTop = rows + margin - 0.5 + reach + inv.gapBelowGrid;
-    const slotY = panelTop + inv.slotsRowOffset;
-    const reserveY = panelTop + inv.reserveRowOffset;
-    const halfRow = (Math.max(slotCount, reserveCols) * pitch) / 2;
-    const counter = this.config.render.slotCounter;
-    const counterX = cx + ((slotCount - 1) / 2) * pitch + counter.offsetX;
-    const counterHalfWidth = (counter.height * counter.canvasWidth) / counter.canvasHeight / 2;
-    return {
-      pitch,
-      bounds: {
-        minX: Math.min(-margin + 0.5 - reach, cx - halfRow),
-        maxX: Math.max(cols + margin - 0.5 + reach, cx + halfRow, counterX + counterHalfWidth),
-        minY: -margin + 0.5 - reach,
-        maxY: reserveY + (Math.max(1, reserveRows) - 1) * pitch + pitch / 2,
-      },
-      counterPos: { x: counterX, y: slotY + counter.offsetY },
-      slotPos: (index) => ({ x: cx + (index - (slotCount - 1) / 2) * pitch, y: slotY }),
-      reservePos: ({ col, row }) => ({ x: cx + (col - (reserveCols - 1) / 2) * pitch, y: reserveY + row * pitch }),
-    };
+  /** computeLayout() for this level: board dims from the snapshot, constant parts from render.layout. */
+  #layoutFor(snapshot) {
+    const { width, height } = this.#size;
+    const usable = Math.max(1, height - this.#insets.top - this.#insets.bottom);
+    const dims = { rows: snapshot.grid.rows, cols: snapshot.grid.cols, margin: snapshot.track.margin, reserveRows: snapshot.inventory.reserveRows };
+    const layoutConfig = { ...this.config.render.layout, slotCount: snapshot.slots.length, reserveCols: snapshot.inventory.reserveCols };
+    return computeLayout(dims, layoutConfig, width / usable);
+  }
+
+  /** The current layout (plain data: rects, cellSize, board origin, view), or null before a level is drawn. */
+  getLayout() {
+    return this.#layout;
   }
 
   /** Diff block meshes against the grid state: add missing / recoloured cells, remove emptied ones. */
   buildGridFromState(gridState) {
     const empty = this.config.grid.emptyValue;
-    const half = this.config.render.blockHeight / 2;
+    const { cellSize } = this.#layout;
+    const half = (this.config.render.blockHeight * cellSize) / 2;
     const live = new Set();
     gridState.cells.forEach((row, r) => row.forEach((value, c) => {
       if (value === empty) return;
@@ -188,7 +178,8 @@ export class Renderer {
       if (existing) this.#levelRoot.remove(existing);
       const mesh = this.factory.block(value, r, c);
       mesh.userData.color = value;
-      this.cellToWorld(c + 0.5, r + 0.5, half, mesh.position);
+      mesh.scale.setScalar(cellSize);
+      this.boardToWorld(c + 0.5, r + 0.5, half, mesh.position);
       this.#levelRoot.add(mesh);
       this.#blockMeshes.set(key, mesh);
     }));
@@ -221,7 +212,8 @@ export class Renderer {
 
   #tile(group, x, y, entry) {
     const tile = this.factory.trackTile(x === entry.x && y === entry.y);
-    this.cellToWorld(x, y, 0, tile.position);
+    tile.scale.setScalar(this.#layout.cellSize);
+    this.boardToWorld(x, y, 0, tile.position);
     group.add(tile);
   }
 
@@ -280,38 +272,52 @@ export class Renderer {
     };
   }
 
-  /** New level shape: drop every level mesh, lay out the static layer again and refit the camera. */
+  /** New level shape: drop every level mesh and lay out the static layer again (the camera does not move). */
   #rebuildStatic(snapshot, signature) {
     this.clear();
     this.#signature = signature;
     this.#style = this.#styleFor(snapshot.levelId);
     this.factory.setStyle(this.#style);
     this.scene.background.setHex(this.#style.background);
-    this.#layout = this.#computeLayout(snapshot);
+    this.#layout = this.#layoutFor(snapshot);
+    const layout = this.#layout;
+    if (layout.reserveOverflow) console.warn(`Level "${snapshot.levelId}" needs ${snapshot.inventory.reserveRows} reserve rows; render.layout fits ${layout.reserve.rows}`);
     this.#track = trackFromSnapshot(snapshot);
     const entry = this.#track.positionAt(0);
-    this.#entry = { point: { x: entry.x, y: entry.y }, dir: HEADING[entry.facing] };
+    this.#entry = { point: boardPoint(layout, entry.x, entry.y), dir: HEADING[entry.facing] };
     this.buildTrack(snapshot.track);
-    for (let index = 0; index < snapshot.slots.length; index += 1) {
+    layout.slots.forEach((_, index) => {
       const mesh = this.factory.slot('free', index);
-      const { x, y } = this.#layout.slotPos(index);
-      this.cellToWorld(x, y, 0, mesh.position);
+      const { x, y } = slotPoint(layout, index);
+      this.designToWorld(x, y, 0, mesh.position);
       this.#levelRoot.add(mesh);
       this.#slotMeshes.push(mesh);
-    }
-    this.#slotCounter = this.factory.text('', this.config.render.slotCounter);
-    this.cellToWorld(this.#layout.counterPos.x, this.#layout.counterPos.y, this.config.render.label.yOffset, this.#slotCounter.position);
+    });
+    this.#slotCounter = this.factory.text('', { ...this.config.render.slotCounter, height: layout.counter.height });
+    this.designToWorld(layout.counter.x, layout.counter.y, this.config.render.label.yOffset, this.#slotCounter.position);
     this.#levelRoot.add(this.#slotCounter);
-    const { reserveCols, reserveRows } = snapshot.inventory;
-    for (let row = 0; row < reserveRows; row += 1) {
-      for (let col = 0; col < reserveCols; col += 1) {
+    // The whole reserve grid, on every level (plus any rows a level needs beyond it).
+    const rows = Math.max(layout.reserve.rows, snapshot.inventory.reserveRows);
+    for (let row = 0; row < rows; row += 1) {
+      for (let col = 0; col < layout.reserve.cols; col += 1) {
         const tile = this.factory.reserveTile();
-        const { x, y } = this.#layout.reservePos({ col, row });
-        this.cellToWorld(x, y, 0, tile.position);
+        const { x, y } = reservePoint(layout, col, row);
+        this.designToWorld(x, y, 0, tile.position);
         this.#levelRoot.add(tile);
       }
     }
-    this.fitCamera();
+    if (this.config.debug.enabled) this.#drawDebugOutlines(layout);
+  }
+
+  /** Config.debug.enabled: outline the design, the three regions and the fitted board. */
+  #drawDebugOutlines(layout) {
+    const colors = this.config.debug.layoutColors;
+    const group = new THREE.Group();
+    for (const key of ['design', 'boardRegion', 'board', 'slotsRegion', 'reserveRegion']) {
+      group.add(this.factory.outline(layout[key], colors[key]));
+    }
+    this.#debugGroup = group;
+    this.#levelRoot.add(group);
   }
 
   #syncUnits(snapshot) {
@@ -347,7 +353,7 @@ export class Renderer {
       group.userData.pickAs = this.#pickTarget(unit, frontOnly);
       if (group.userData.pickAs) pickables.push(group);
       const pose = this.#unitPose(unit, now, backs);
-      this.cellToWorld(pose.x, pose.y, unitHeight / 2 + (pose.air || 0) * this.config.render.hopHeight, group.position);
+      this.designToWorld(pose.x, pose.y, unitHeight / 2 + (pose.air || 0) * this.config.render.hopHeight, group.position);
       this.#turn(group, pose.dir, dt);
     }
     for (const [id, group] of this.#unitMeshes) {
@@ -431,7 +437,8 @@ export class Renderer {
 
   /**
    * Where to draw a unit (cell units) and which way it heads:
-   *   RUNNING / EATING -- on the track path at its interpolated distance (trackPlacement.js)
+   * All in world (design) units:
+   *   RUNNING / EATING -- on the track path at its interpolated distance (trackPlacement.js), mapped onto the board
    *   LAUNCHING        -- along the eased flight curve from where it was drawn when the launch began to the entry,
    *                       never past its place in the entry queue (launchPlacement.js)
    *   RETURNED         -- gliding from where it left the track into its slot (render.returnToSlotMs), then parked
@@ -440,20 +447,23 @@ export class Renderer {
   #unitPose(unit, now, backs) {
     const motion = this.#motionFor(unit, now);
     const { motionEasing, launchLift, launchCurve, returnToSlotMs } = this.config.render;
+    const layout = this.#layout;
     let pose;
     if (unit.pose) {
       const p = trackDrawPosition(unit, this.#track, this.#alpha);
-      pose = { x: p.x, y: p.y, dir: HEADING[p.facing] };
+      pose = { ...boardPoint(layout, p.x, p.y), dir: HEADING[p.facing] };
     } else if (unit.state === UnitState.LAUNCHING) {
       if (!motion.path) motion.path = launchPath(motion.from, this.#entry.point, this.#entry.dir, { lift: launchLift, curve: launchCurve });
-      pose = flightPose(motion.path, flightProgress(unit, this.#launchSteps, this.#alpha), motionEasing, backs.get(unit.id) || 0);
+      // Queue gaps are track distances (cells): on the board they are cellSize long.
+      const back = (backs.get(unit.id) || 0) * layout.cellSize;
+      pose = flightPose(motion.path, flightProgress(unit, this.#launchSteps, this.#alpha), motionEasing, back);
     } else if (unit.state === UnitState.RETURNED && unit.slotIndex !== null) {
       const progress = returnToSlotMs > 0 ? (now - motion.since) / returnToSlotMs : 1;
-      pose = returnPose(motion.from, this.#layout.slotPos(unit.slotIndex), progress, motionEasing);
+      pose = returnPose(motion.from, slotPoint(layout, unit.slotIndex), progress, motionEasing);
     } else {
       const anim = this.#reserveAnim.get(unit.id);
       const row = anim ? anim.y : unit.reservePos.row;
-      pose = { ...this.#layout.reservePos({ col: unit.reservePos.col, row }), dir: HEADING.N };
+      pose = { ...reservePoint(layout, unit.reservePos.col, row), dir: HEADING.N };
     }
     motion.last = { x: pose.x, y: pose.y };
     return pose;
@@ -485,9 +495,9 @@ export class Renderer {
   /** Logical start of a launch: the reserve cell it left, or its parking slot for a relaunch. */
   #originPoint(unit) {
     const origin = unit.launchOrigin;
-    if (origin && origin.kind === 'slot') return this.#layout.slotPos(origin.index);
+    if (origin && origin.kind === 'slot') return slotPoint(this.#layout, origin.index);
     const { col, row } = origin || unit.reservePos;
-    return this.#layout.reservePos({ col, row });
+    return reservePoint(this.#layout, col, row);
   }
 
   #removeUnit(id, group) {
@@ -514,10 +524,15 @@ export class Renderer {
     return () => offs.forEach((off) => off());
   }
 
-  /** Cell units (x right, y down) -> world (x right, z down, y up); applies render.cellSize. */
-  cellToWorld(x, y, height = 0, target = new THREE.Vector3()) {
-    const { cellSize } = this.config.render;
-    return target.set(x * cellSize, height, y * cellSize);
+  /** Design units (x right, y down) -> world (x right, z down, y up): the same numbers on the ground plane. */
+  designToWorld(x, y, height = 0, target = new THREE.Vector3()) {
+    return target.set(x, height, y);
+  }
+
+  /** Logic cell units of the board (origin = grid top-left) -> world, through the level's cellSize and board origin. */
+  boardToWorld(x, y, height = 0, target = new THREE.Vector3()) {
+    const p = boardPoint(this.#layout, x, y);
+    return target.set(p.x, height, p.y);
   }
 
   /**
@@ -555,6 +570,8 @@ export class Renderer {
     for (const group of this.#unitMeshes.values()) this.factory.disposeLabel(group.userData.label);
     if (this.#slotCounter) this.factory.disposeLabel(this.#slotCounter);
     this.#slotCounter = null;
+    if (this.#debugGroup) this.#debugGroup.children.forEach((line) => line.geometry.dispose());
+    this.#debugGroup = null;
     if (this.#levelRoot) this.#levelRoot.clear();
     this.#blockMeshes.clear();
     this.#unitMeshes.clear();

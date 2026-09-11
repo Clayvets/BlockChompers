@@ -4,6 +4,7 @@ import { Events } from './core/Events.js';
 import { GamePhase } from './core/GameManager.js';
 import { levels, levelLibrary } from './core/levels/index.js';
 import { pickDebugLevel } from './debug/levelParam.js';
+import { DebugPanel, layoutDebugEntries } from './debug/DebugPanel.js';
 import { Renderer } from './render/Renderer.js';
 import { InputManager } from './input/InputManager.js';
 import { UIManager } from './ui/UIManager.js';
@@ -27,6 +28,9 @@ renderer.resize(window.innerWidth, window.innerHeight);
 const unbinds = [renderer.bindEvents(eventBus)];
 input.attach();
 ui.mount();
+// Config.debug.enabled: layout outlines (Renderer) and a panel with the level's cellSize.
+const debugPanel = config.debug.enabled ? new DebugPanel({ root: uiRoot, config }) : null;
+if (debugPanel) debugPanel.mount();
 
 if (config.debug.logEvents) {
   for (const type of Object.values(Events)) {
@@ -49,6 +53,7 @@ function frame(now) {
   input.setEnabled(snapshot.phase === GamePhase.PLAYING && !snapshot.paused);
   renderer.sync(snapshot);
   ui.update(snapshot);
+  if (debugPanel) debugPanel.update(layoutDebugEntries(renderer.getLayout(), snapshot));
   renderer.render();
 
   requestAnimationFrame(frame);
@@ -66,6 +71,7 @@ if (import.meta.hot) {
     unbinds.forEach((unbind) => unbind());
     input.detach();
     ui.unmount();
+    if (debugPanel) debugPanel.unmount();
     renderer.dispose();
   });
 }

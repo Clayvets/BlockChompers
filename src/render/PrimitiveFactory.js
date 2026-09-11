@@ -12,11 +12,15 @@ const SYMMETRIC_BASE = Math.PI / 2;
  * Geometries and materials are cached by key and shared; only capacity labels own their resources
  * (one canvas per unit) and must be released with disposeLabel(). Meshes carry userData = { kind, id }
  * so Renderer.pick can map hits back to logical ids.
+ *
+ * Sizes: board pieces (blocks, track tiles) are built for a 1 x 1 cell and scaled by the Renderer to the level's
+ * cellSize; everything else (slots, reserve tiles, units, labels) is built at its constant render.layout size.
  */
 export class PrimitiveFactory {
   constructor(config) {
     this.config = config;
     this.render = config.render;
+    this.layout = config.render.layout;
     /** Shared geometries/materials keyed by descriptor, disposed in dispose(). */
     this._cache = new Map();
     this.setStyle({});
@@ -60,15 +64,15 @@ export class PrimitiveFactory {
     return this.#cached(`flat:${hex}`, () => new THREE.MeshBasicMaterial({ color: hex }));
   }
 
-  #tileGeometry(scale) {
-    const edge = this.render.cellSize * scale;
+  /** Flat square tile of the given world edge. */
+  #tileGeometry(edge) {
     return this.#cached(`tile:${edge}`, () => new THREE.PlaneGeometry(edge, edge).rotateX(LAY_FLAT));
   }
 
-  /** A grid block: BoxGeometry(cellSize - gap, blockHeight, cellSize - gap) x palette[color]. */
+  /** A grid block for a 1 x 1 cell: BoxGeometry(1 - gap, blockHeight, 1 - gap) x palette[color]; scale it by cellSize. */
   block(color, row, col) {
-    const { cellSize, gap, blockHeight } = this.render;
-    const geometry = this.#cached('block', () => new THREE.BoxGeometry(cellSize - gap, blockHeight, cellSize - gap));
+    const { gap, blockHeight } = this.render;
+    const geometry = this.#cached('block', () => new THREE.BoxGeometry(1 - gap, blockHeight, 1 - gap));
     const mesh = new THREE.Mesh(geometry, this.#lit(this.#hex(color)));
     mesh.userData = { kind: 'block', id: `${row},${col}` };
     return mesh;
@@ -76,7 +80,8 @@ export class PrimitiveFactory {
 
   /** A unit ("chomper"): a cone lying on its side with the apex on +x, so rotation.y encodes heading. */
   unit(color, id) {
-    const { unitSize, unit } = this.render;
+    const { unit } = this.render;
+    const { unitSize } = this.layout;
     const geometry = this.#cached('unit', () =>
       new THREE.ConeGeometry(unitSize * unit.coneRadiusFactor, unitSize, unit.radialSegments, 1, false, SYMMETRIC_BASE).rotateZ(LAY_FLAT),
     );
@@ -88,7 +93,7 @@ export class PrimitiveFactory {
 
   /** Active-slot marker tinted by status; userData = { kind: 'slot', id: index }. */
   slot(status, index) {
-    const mesh = new THREE.Mesh(this.#tileGeometry(this.render.inventory.tileScale), this.slotMaterial(status));
+    const mesh = new THREE.Mesh(this.#tileGeometry(this.layout.slotSize * this.render.inventory.tileScale), this.slotMaterial(status));
     mesh.userData = { kind: 'slot', id: index };
     return mesh;
   }
@@ -100,19 +105,31 @@ export class PrimitiveFactory {
 
   /** Background tile under a reserve position. */
   reserveTile() {
-    return new THREE.Mesh(this.#tileGeometry(this.render.inventory.tileScale), this.#flat(this.style.tileColor));
+    return new THREE.Mesh(this.#tileGeometry(this.layout.reserveCellSize * this.render.inventory.tileScale), this.#flat(this.style.tileColor));
   }
 
-  /** Track guide tile; the entry corner gets the entry colour. */
+  /** Track guide tile for a 1 x 1 cell (scale it by cellSize); the entry corner gets the entry colour. */
   trackTile(isEntry = false) {
     const { guideColor, entryColor } = this.style;
     return new THREE.Mesh(this.#tileGeometry(this.render.track.tileScale), this.#flat(isEntry ? entryColor : guideColor));
   }
 
-  /** A unit's capacity label: a square text sprite styled by render.label. */
+  /** A unit's capacity label: a square text sprite styled by render.label, render.layout.labelSize high. */
   label(text) {
-    const { canvasSize, worldSize, ...style } = this.render.label;
-    return this.text(text, { ...style, canvasWidth: canvasSize, canvasHeight: canvasSize, height: worldSize });
+    const { canvasSize, ...style } = this.render.label;
+    return this.text(text, { ...style, canvasWidth: canvasSize, canvasHeight: canvasSize, height: this.layout.labelSize });
+  }
+
+  /**
+   * Debug outline of a rect { x, y, w, h } on the ground plane (design units; x -> world x, y -> world z), drawn on top.
+   * The geometry is the caller's to dispose (Renderer.clear drops it with the level).
+   */
+  outline({ x, y, w, h }, color, height = 0.02) {
+    const points = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]].map(([px, pz]) => new THREE.Vector3(px, height, pz));
+    const material = this.#cached(`line:${color}`, () => new THREE.LineBasicMaterial({ color, depthTest: false, transparent: true }));
+    const line = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(points), material);
+    line.renderOrder = 20;
+    return line;
   }
 
   setLabel(sprite, text) {

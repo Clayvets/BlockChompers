@@ -29,8 +29,9 @@ export const Config = Object.freeze({
     entry: Object.freeze({ corner: 'SW' }),
     /**
      * Minimum distance (cells) between runners, along the track only: a launching unit waits at the entry until the
-     * last runner is this far ahead, and a runner never closes in on the unit ahead beyond it (it waits while that unit eats). Keep it at
-     * least render.unitSize so meshes never overlap. 0 = pass-through (units may overlap on the path).
+     * last runner is this far ahead, and a runner never closes in on the unit ahead beyond it (it waits while that unit eats). Kept at
+     * least render.unitSize (a unit's length in cells before the fixed layout). Units are now drawn at the constant
+     * render.layout.unitSize, so on boards with small cells neighbours can overlap on the path. 0 = pass-through.
      */
     launchSpacing: 1,
   }),
@@ -107,11 +108,44 @@ export const Config = Object.freeze({
   }),
 
   render: Object.freeze({
-    /** World units per cell. The ONLY place cell units become world units. */
-    cellSize: 1,
+    /**
+     * Fixed portrait layout in DESIGN units (= world units on the x/z plane; x right, y down on screen), identical on
+     * every level. The camera shows the whole design, scaled uniformly to the viewport below the HUD, with any extra
+     * space as margin. Only the board (grid + track ring) scales: cellSize = min(boardRegion.w / boardCols,
+     * boardRegion.h / boardRows, maxCellSize), centred in boardRegion (src/render/layout/computeLayout.js).
+     * Rects are { x, y, w, h } from the top-left corner.
+     */
+    layout: Object.freeze({
+      designWidth: 10,
+      designHeight: 20,
+      /** Grid + track. Its 0.4 margins leave room for units on the ring, which are larger than small cells. */
+      boardRegion: Object.freeze({ x: 0.4, y: 0.4, w: 9.2, h: 12 }),
+      /** The 5 parking slots, centred in this band. */
+      slotsRegion: Object.freeze({ x: 0.4, y: 12.9, w: 9.2, h: 1 }),
+      /** The reserve: reserveCols columns of reserveCellSize cells, as many rows as fit (7: Carrot needs 7). */
+      reserveRegion: Object.freeze({ x: 0.4, y: 14.35, w: 9.2, h: 5.25 }),
+      /** Slot pitch; the slot tile is slotSize x render.inventory.tileScale. */
+      slotSize: 1,
+      /** Reserve pitch; the reserve tile is reserveCellSize x render.inventory.tileScale. */
+      reserveCellSize: 0.75,
+      /** Unit (cone) length, the same in the reserve, in a slot and on the track. */
+      unitSize: 0.6,
+      /** Capacity label height. */
+      labelSize: 0.45,
+      /** "N/5" counter centre and text height (width follows render.slotCounter's canvas aspect). */
+      counter: Object.freeze({ x: 8.3, y: 13.4, height: 0.55 }),
+      /** Largest board cell, so small levels do not blow up (0.75: a unit is 0.8 of a cell, as before). */
+      maxCellSize: 0.75,
+    }),
+    /** Block gap and height as fractions of a board cell (blocks scale with the level's cellSize). */
     gap: 0.08,
     blockHeight: 0.6,
+    /**
+     * A unit's length in board cells before the fixed layout. Not used for drawing any more (see layout.unitSize); kept
+     * because tests/core/followDistance.test.js checks track.launchSpacing >= render.unitSize.
+     */
     unitSize: 0.8,
+    /** World height of a unit's centre above the ground (constant). */
     unitHeight: 0.9,
     background: 0x000000,
     /** Logical colour id -> hex. */
@@ -122,21 +156,13 @@ export const Config = Object.freeze({
       guideColor: 0x1c1c26,
       /** Tint of the shared entry corner tile. */
       entryColor: 0x3a3a58,
-      /** Guide tile edge as a fraction of a cell. */
+      /** Guide tile edge as a fraction of a board cell. */
       tileScale: 0.9,
     }),
-    camera: Object.freeze({ height: 20, padding: 1, near: 0.1, far: 100 }),
+    camera: Object.freeze({ height: 20, near: 0.1, far: 100 }),
     inventory: Object.freeze({
-      /** Cells between the outermost runner sub-lane and the top of the inventory panel. */
-      gapBelowGrid: 0.6,
-      /** Extra space between neighbouring slots / reserve tiles, in cells (pitch = 1 + slotGap). */
-      slotGap: 0.2,
-      /** Panel top -> slot row centre, in cells. */
-      slotsRowOffset: 0.5,
-      /** Panel top -> first reserve row centre, in cells. */
-      reserveRowOffset: 2.1,
       tileColor: 0x16161e,
-      /** Slot / reserve tile edge as a fraction of a cell. */
+      /** Slot / reserve tile edge as a fraction of layout.slotSize / layout.reserveCellSize. */
       tileScale: 0.9,
     }),
     /** Physically based (three r155+): lit diffuse ~ colour x intensity / PI, so ~2 + ~1.5 keeps palette colours true. */
@@ -156,18 +182,14 @@ export const Config = Object.freeze({
       color: '#ffffff',
       outline: '#000000',
       outlineWidth: 8,
-      worldSize: 0.6,
+      /** World height above the ground (top-down, so it only keeps the label above the meshes). */
       yOffset: 1.5,
     }),
     /** Background tint applied on LEVEL_WON / LEVEL_LOST (event garnish). */
     endTint: Object.freeze({ won: 0x0b2410, lost: 0x2a0b0b }),
     pixelRatioMax: 2,
-    /** Available-slot counter "N/5": plain text right of the slot row. Offsets in cells from the last slot's centre;
-     *  height in cells (width follows the canvas aspect). */
+    /** Available-slot counter "N/5": plain text right of the slot row; position and height in layout.counter. */
     slotCounter: Object.freeze({
-      offsetX: 1.4,
-      offsetY: 0,
-      height: 0.7,
       canvasWidth: 128,
       canvasHeight: 64,
       font: 'bold 44px system-ui, sans-serif',
@@ -181,7 +203,7 @@ export const Config = Object.freeze({
     reserveShiftStaggerMs: 60,
     /** One curve for every eased move: launch and relaunch flight, return to a slot, reserve shift. */
     motionEasing: 'easeOutCubic',
-    /** Launch flight shape: cells the flight first lifts off its start (clear of the reserve row it leaves)... */
+    /** Launch flight shape: world units the flight first lifts off its start (clear of the reserve row it leaves)... */
     launchLift: 0.7,
     /** ...and how early it lines up with the track before the entry, as a fraction of the start's depth (0 = late). */
     launchCurve: 0.5,
@@ -280,6 +302,12 @@ export const Config = Object.freeze({
     logEvents: false,
     /** Debug level select: ?level=<id> loads any level from levelLibrary on its own, outside the progression. '' = off. */
     levelParam: 'level',
+    /** Layout debugging: outline the render.layout regions and the fitted board, and show cellSize in a small panel. */
+    enabled: false,
+    /** Outline colours (drawn on top of everything). */
+    layoutColors: Object.freeze({ design: 0xffffff, boardRegion: 0x00e676, board: 0xffc400, slotsRegion: 0x00b0ff, reserveRegion: 0xff4081 }),
+    /** Debug panel: a small text box in the bottom-right corner of #ui-root, clear of the centred reserve (pixels). */
+    panel: Object.freeze({ right: 8, bottom: 8, padding: 6, font: '11px ui-monospace, monospace', color: '#ffffff', background: 'rgba(0, 0, 0, 0.65)' }),
   }),
 });
 
