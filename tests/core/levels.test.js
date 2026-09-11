@@ -29,6 +29,18 @@ describe('shipped levels', () => {
     }
   });
 
+  it('every colour of every level has a render colour (Config.render.levels[id].palette or render.palette)', () => {
+    for (const level of levels) {
+      const palette = { ...Config.render.palette, ...(Config.render.levels[level.id] || {}).palette };
+      const colours = [...new Set(level.grid.flat().filter((v) => v !== Config.grid.emptyValue))];
+      expect([level.id, colours.filter((c) => palette[c] === undefined)]).toEqual([level.id, []]);
+    }
+  });
+
+  it('level files hold only data: id, grid, units', () => {
+    for (const level of levels) expect(Object.keys(level).sort()).toEqual(['grid', 'id', 'units']);
+  });
+
   it('every level is balanced: per colour, unit capacity equals the block count (GameManager.validateLevel)', () => {
     for (const level of levels) expect([level.id, GameManager.validateLevel(level, Config)]).toEqual([level.id, { ok: true, errors: [] }]);
   });

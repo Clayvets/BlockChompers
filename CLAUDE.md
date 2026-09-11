@@ -41,7 +41,9 @@ npx vitest run -t "outermost block"             # by test name
 
 ## Levels
 
-`src/core/levels/*.js` export `{ id, grid: number[][], units: [{ color, capacity }] }`. `0` = empty, positive ints = colour ids; zero rows/cols are padding.
+`src/core/levels/*.js` export `{ id, grid: number[][], units: [{ color, capacity }] }`. `0` = empty, positive ints = colour ids; zero rows/cols are padding. Level files are pure data (only `id`, `grid`, `units`; a test enforces it). Colour ids mean different colours per level: their hex values, the scene background and the empty ring/reserve tile colours live in `Config.render.levels[levelId]`, merged over the render defaults (the snapshot carries `levelId`). Every colour a level uses needs a palette entry (tested). The play order is `levels` in `src/core/levels/index.js`.
+
+Reserve design: size each unit to what a solo lap can reach once the units before it have finished. `src/core/levels/watermelon.js` explains the method and `tests/core/watermelon.test.js` plays its scripted order to WIN under both the test timing and the shipped timing.
 
 `GameManager.validateLevel` runs inside `loadLevel` before any state changes, and every failure is a hard error: grid structure, unit definitions, and **per-colour balance**. For each colour, the units' capacities must sum exactly to that colour's block count, so spare or missing capacity is rejected. As a consequence a level is won only by running every unit down to 0. A parked unit (one that finishes its lap with capacity left, because its colour is walled in) makes the level unwinnable. To make a unit park in a test, wall its colour in; never give it spare capacity.
 

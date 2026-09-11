@@ -315,6 +315,8 @@ export class GameManager {
       phase: this.phase,
       stepCount: this.stepCount,
       paused: this.paused,
+      /** Id of the loaded level; the renderer keys per-level presentation (Config.render.levels) on it. */
+      levelId: this.level ? this.level.id : null,
       grid: this.grid.toState(),
       track,
       units,

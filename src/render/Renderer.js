@@ -34,6 +34,8 @@ export class Renderer {
   #gridVersion = -1;
   #inventoryVersion = -1;
   #signature = null;
+  /** Resolved per-level colours (see #styleFor). */
+  #style = null;
   #layout = null;
   #pickables = [];
   #size = { width: 1, height: 1 };
@@ -225,15 +227,31 @@ export class Renderer {
     this.#syncUnits(snapshot.units);
   }
 
-  #signatureOf({ grid, track, slots, inventory }) {
+  #signatureOf({ levelId, grid, track, slots, inventory }) {
     const entry = track.corners[0];
-    return [grid.rows, grid.cols, track.margin, track.direction, entry.x, entry.y, slots.length, inventory.reserveCols, inventory.reserveRows].join(':');
+    return [levelId, grid.rows, grid.cols, track.margin, track.direction, entry.x, entry.y, slots.length, inventory.reserveCols, inventory.reserveRows].join(':');
+  }
+
+  /** Defaults from Config.render overlaid with Config.render.levels[levelId], if any. */
+  #styleFor(levelId) {
+    const render = this.config.render;
+    const level = (render.levels && render.levels[levelId]) || {};
+    return {
+      background: level.background ?? render.background,
+      palette: { ...render.palette, ...level.palette },
+      guideColor: level.track?.guideColor ?? render.track.guideColor,
+      entryColor: level.track?.entryColor ?? render.track.entryColor,
+      tileColor: level.inventory?.tileColor ?? render.inventory.tileColor,
+    };
   }
 
   /** New level shape: drop every level mesh, lay out the static layer again and refit the camera. */
   #rebuildStatic(snapshot, signature) {
     this.clear();
     this.#signature = signature;
+    this.#style = this.#styleFor(snapshot.levelId);
+    this.factory.setStyle(this.#style);
+    this.scene.background.setHex(this.#style.background);
     this.#layout = this.#computeLayout(snapshot);
     this.buildTrack(snapshot.track);
     for (let index = 0; index < snapshot.slots.length; index += 1) {
@@ -308,7 +326,7 @@ export class Renderer {
   }
 
   /**
-   * Cosmetic reactions only: tint the background on LEVEL_WON / LEVEL_LOST, restore it on LEVEL_LOADED.
+   * Cosmetic reactions only: tint the background on LEVEL_WON / LEVEL_LOST, restore the level's own on LEVEL_LOADED.
    * @returns {() => void} unbind
    */
   bindEvents(eventBus) {
@@ -319,7 +337,7 @@ export class Renderer {
     const offs = [
       eventBus.on(Events.LEVEL_WON, tint(endTint.won)),
       eventBus.on(Events.LEVEL_LOST, tint(endTint.lost)),
-      eventBus.on(Events.LEVEL_LOADED, tint(background)),
+      eventBus.on(Events.LEVEL_LOADED, () => tint(this.#style ? this.#style.background : background)()),
     ];
     return () => offs.forEach((off) => off());
   }

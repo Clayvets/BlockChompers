@@ -19,6 +19,22 @@ export class PrimitiveFactory {
     this.render = config.render;
     /** Shared geometries/materials keyed by descriptor, disposed in dispose(). */
     this._cache = new Map();
+    this.setStyle({});
+  }
+
+  /**
+   * Per-level colours (Renderer resolves them from Config.render.levels): palette for blocks/units and the
+   * colours of empty ring and reserve cells. Omitted keys fall back to the render defaults.
+   * @param {{ palette?: object, guideColor?: number, entryColor?: number, tileColor?: number }} style
+   */
+  setStyle(style) {
+    const { palette, track, inventory } = this.render;
+    this.style = {
+      palette: style.palette || palette,
+      guideColor: style.guideColor ?? track.guideColor,
+      entryColor: style.entryColor ?? track.entryColor,
+      tileColor: style.tileColor ?? inventory.tileColor,
+    };
   }
 
   #cached(key, create) {
@@ -31,8 +47,8 @@ export class PrimitiveFactory {
   }
 
   #hex(color) {
-    const hex = this.render.palette[color];
-    if (hex === undefined) throw new Error(`PrimitiveFactory: render.palette has no entry for colour ${color}`);
+    const hex = this.style.palette[color];
+    if (hex === undefined) throw new Error(`PrimitiveFactory: no palette entry for colour ${color}`);
     return hex;
   }
 
@@ -84,14 +100,13 @@ export class PrimitiveFactory {
 
   /** Background tile under a reserve position. */
   reserveTile() {
-    const { tileScale, tileColor } = this.render.inventory;
-    return new THREE.Mesh(this.#tileGeometry(tileScale), this.#flat(tileColor));
+    return new THREE.Mesh(this.#tileGeometry(this.render.inventory.tileScale), this.#flat(this.style.tileColor));
   }
 
-  /** Track guide tile; the entry corner gets render.track.entryColor. */
+  /** Track guide tile; the entry corner gets the entry colour. */
   trackTile(isEntry = false) {
-    const { tileScale, guideColor, entryColor } = this.render.track;
-    return new THREE.Mesh(this.#tileGeometry(tileScale), this.#flat(isEntry ? entryColor : guideColor));
+    const { guideColor, entryColor } = this.style;
+    return new THREE.Mesh(this.#tileGeometry(this.render.track.tileScale), this.#flat(isEntry ? entryColor : guideColor));
   }
 
   /** A camera-facing number sprite (own canvas + texture), always drawn on top. */

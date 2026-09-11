@@ -142,6 +142,22 @@ export const Config = Object.freeze({
     /** Background tint applied on LEVEL_WON / LEVEL_LOST (event garnish). */
     endTint: Object.freeze({ won: 0x0b2410, lost: 0x2a0b0b }),
     pixelRatioMax: 2,
+    /**
+     * Per-level presentation overrides keyed by level id (merged over the defaults above). Level files in
+     * src/core/levels stay pure: colour ids there are only numbers, and their meaning lives here.
+     */
+    levels: Object.freeze({
+      watermelon: Object.freeze({
+        background: 0xc5ecfb,
+        palette: Object.freeze({ 1: 0x000000, 2: 0xff5a78, 3: 0xf50f3c, 4: 0xffffff, 5: 0x23ab57, 6: 0x0f8a3c }),
+        /**
+         * Empty ring / reserve cells: a mid blue, so both black (~6.6:1) and white (~3.2:1) units stay readable on
+         * them (a light tile left white units at ~1.7:1).
+         */
+        track: Object.freeze({ guideColor: 0x5f97b3, entryColor: 0x467d99 }),
+        inventory: Object.freeze({ tileColor: 0x5f97b3 }),
+      }),
+    }),
   }),
 
   /** DOM overlay: copy, colours, sizes (px) and timings (s). Read by src/ui only; published as CSS custom properties. */
@@ -161,6 +177,8 @@ export const Config = Object.freeze({
     colors: Object.freeze({
       text: '#ffffff',
       panel: '#1d1d27',
+      /** Solid top bar, so the HUD text stays readable on light level backgrounds. */
+      bar: '#15151d',
       backdrop: 'rgba(0, 0, 0, 0.6)',
       money: '#ffd24a',
       won: '#7cff8a',
