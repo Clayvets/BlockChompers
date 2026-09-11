@@ -38,3 +38,62 @@ Stop after each milestone with a short report and a proposed commit message. Ask
 === 2026-09-10T21:08:28-05:00 | session 567fdf5c ===
 go
 
+=== 2026-09-10T21:31:34-05:00 | session 567fdf5c ===
+go
+
+=== 2026-09-10T21:43:55-05:00 | session 567fdf5c ===
+go
+
+=== 2026-09-10T22:24:48-05:00 | session 567fdf5c ===
+Bug: a unit whose capacity is greater than the blocks of its color it can reach finishes its lap, parks and blocks its slot forever. Example: a red unit parks with 2 left after all red blocks are gone. Parking is correct; the real problem is unbalanced levels.
+Fix: in every level, the total capacity of the units of each color must equal exactly the number of blocks of that color in the grid. Turn the R7 dev-only warning into a hard validation error (too much and too little), and rebalance all existing levels so they pass.
+Add tests: validation rejects capacity > blocks and capacity < blocks per color, accepts an exact match, and every level in src/core/levels passes. Don't change the parking or slot rules, and keep npm test green.
+Report which levels you changed and propose a commit message.
+
+=== 2026-09-10T22:55:39-05:00 | session 567fdf5c ===
+Task: replace the current debug HUD (the "Blocks left / Slots" text) with a minimal UI. v1 rule: simple shapes and flat overlays only, meaning plain DOM elements, solid colors, system font, and no images, icon libraries or new dependencies.
+Top bar (HUD): a settings button in the top-left corner, the current level ("Level 1") centered, and the accumulated money in the top-right corner.
+Settings button: opens a small flat panel that pauses the simulation, with "Resume" and "Restart level" buttons.
+Win overlay: when LEVEL_WON fires (after the existing win delay), dim the screen and show a centered card with "Congratulations!" and a "Continue +$X" button. Clicking it adds the reward to the money, updates the HUD and loads the next level.
+Lose overlay: when LEVEL_LOST fires, for either loss reason, show a centered card with "Out of space" and a "Retry" button that restarts the same level.
+Architecture: money and level progression live in a pure core module (no DOM, no three) exposed through getState() and events. The reward per level and all UI colors, sizes and timings live in Config.js. UIManager only renders state and turns button clicks into GameManager commands. Overlays block input to the game underneath.
+Add headless tests for the money and progression logic: the reward is added once per win, retry gives no reward, and loading the next level works. Keep npm test green and the build clean.
+Report the decisions you made (for example, what happens after the last level) and propose a commit message.
+
+=== 2026-09-10T23:18:43-05:00 | session 567fdf5c ===
+Task: add a new level "Watermelon" built from pixel art. The source image is at assets/reference/watermelon.png. Compare the matrix below against it and report any mismatch before writing the level.
+Grid: 17 rows × 18 cols, row 0 = top. 0 = empty, 1 = black, 2 = pink, 3 = red, 4 = white, 5 = green, 6 = dark green.
+[0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,0]
+[0,0,0,0,0,0,0,1,2,2,1,0,0,0,0,0,0,0]
+[0,0,0,0,0,0,1,2,3,3,2,1,0,0,0,0,0,0]
+[0,0,0,0,0,0,1,2,3,3,2,1,0,0,0,0,0,0]
+[0,0,0,0,0,1,2,3,1,3,3,2,1,0,0,0,0,0]
+[0,0,0,0,1,2,3,3,3,3,3,3,2,1,0,0,0,0]
+[0,0,0,0,1,2,3,3,3,3,1,3,2,1,0,0,0,0]
+[0,0,0,1,2,3,3,3,1,3,3,3,3,2,1,0,0,0]
+[0,0,1,2,3,3,3,3,3,3,3,3,3,3,2,1,0,0]
+[0,0,1,2,3,3,1,3,3,3,3,1,3,3,2,1,0,0]
+[0,1,4,3,3,3,3,3,3,1,3,3,3,3,3,4,1,0]
+[1,5,5,4,4,3,3,3,3,3,3,3,3,4,4,5,5,1]
+[1,5,5,5,5,4,4,3,3,3,3,4,4,5,5,5,5,1]
+[1,6,6,5,5,5,5,4,4,4,4,5,5,5,5,6,6,1]
+[0,1,1,6,6,5,5,5,5,5,5,5,5,6,6,1,1,0]
+[0,0,0,1,1,6,6,6,6,6,6,6,6,1,1,0,0,0]
+[0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0]
+Palette (render config): 1 #000000, 2 #FF5A78, 3 #F50F3C, 4 #FFFFFF, 5 #23AB57, 6 #0F8A3C.
+Readability: black blocks must stay readable. For this level, use the art's light blue #C5ECFB as the scene background, set in render config keyed by level id and never inside the core level file. If contrast is still poor, adjust the empty-cell tile color.
+Reserve: count the blocks per color and design a 4-column reserve whose total capacity per color matches those counts exactly, as the existing validation requires. Order the units so the level is winnable with 5 slots. Keep in mind that outer colors (the black outline, then the pink edge) block the inner ones.
+Proof: add a headless test that plays this level to WIN with a scripted launch order, and include the level in the existing validation tests.
+Add the level to the progression after the existing ones. Keep npm test green and the build clean, and check that it fits the screen in portrait.
+Report the block count per color, the reserve you chose, and a proposed commit message.
+
+=== 2026-09-10T23:42:20-05:00 | session 567fdf5c ===
+Task: apply 4 gameplay changes without breaking the core/render separation. src/core stays pure and deterministic, and every new value lives in Config.js.
+1) Pickable units: only the front row of each reserve column and the units parked in the 5 slots can be clicked. Enforce this in core (inventory.frontOnlyPick = true, reject other picks with LAUNCH_REJECTED) and in input (non-front reserve units are not raycast targets).
+2) Reserve shift: when a front unit leaves for a slot, the units behind it in that column move up one cell. Logic shifts instantly (RESERVE_SHIFTED). The renderer animates each unit one by one from front to back, and a unit only starts moving once the cell ahead is free, so meshes never overlap. Add render.reserveShiftMs and render.reserveShiftStaggerMs.
+3) Relaunch parked units: set rules.allowRelaunchParked = true and add a launchFromSlot(slotIndex) command. A parked unit clicked again goes back on the track with its current capacity and keeps its slot (OCCUPIED while moving). If it reaches 0 it dies and frees the slot; if not, it parks again. Emit UNIT_RELAUNCHED.
+Loss must still be possible: redefine LOSE as a deadlock. The grid is not cleared, no unit is moving, no reserve front unit can take a FREE slot, and no parked unit can fire on a full lap (no lane on any side has its color as the first non-empty cell). Keep the "slots_blocked" and "out_of_units" reasons.
+4) Level order: the current level02 becomes the first level. Update ids, names, progression and every test that references them.
+Tests: non-front picks are rejected, the reserve shift is correct, relaunching keeps capacity and slot, a relaunched unit dies at 0 and frees its slot, deadlock triggers LOSE, relaunching a useful parked unit does not trigger LOSE, and the new first level still plays to WIN headless. Keep npm test green and the build clean.
+Update the README v1 values table with the new Config keys. Report your decisions and propose a commit message.
+

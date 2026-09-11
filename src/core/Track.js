@@ -4,7 +4,7 @@ const CORNER_BY_SIGN = { '-1,-1': Corner.NW, '1,-1': Corner.NE, '1,1': Corner.SE
 
 function outwardOf(side) {
   const { dr, dc } = INWARD[side];
-  return { dx: -dc, dy: -dr };
+  return { dx: 0 - dc, dy: 0 - dr }; // 0 - x avoids a negative zero
 }
 
 function facingOf(dx, dy) {
@@ -145,6 +145,17 @@ export class Track {
       outward: { ...a.outward },
       isCorner: a.isCorner,
     };
+  }
+
+  /**
+   * Distance along the loop -> position on the track path (cell units) and heading. Wrap-safe: any distance is
+   * normalised first, so length + d is the same place as d. Positions are linear between neighbouring ring cells,
+   * which are always on the path, so a moving unit never cuts a corner.
+   * @returns {{ x: number, y: number, facing: string }}
+   */
+  positionAt(distance) {
+    const { x, y, facing } = this.poseAt(this.normalize(distance));
+    return { x, y, facing };
   }
 
   /** @returns {{ side: string, laneIndex: number } | null} the grid lane faced at t, null at corners/margin cells */

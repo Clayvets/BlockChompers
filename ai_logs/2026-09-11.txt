@@ -1,0 +1,423 @@
+=== 2026-09-11T00:11:29-05:00 | session 567fdf5c ===
+Task: fix 3 bugs. Keep src/core pure and deterministic, put every new value in Config.js, and find the root cause of each bug before changing code.
+
+1) Units drift off the track: when several units are on the track at the same time, they leave the lane instead of following it (see screenshot: on the left side, units sit outside the track column).
+- Reproduce it first by launching several units in quick succession.
+- Add a failing headless test that checks every ON_TRACK unit's pos lies exactly on the track path at every step, with several units launched together.
+- Check whether the error is in logic (Track/Simulator) or in the renderer. Likely suspects: interpolation matched by array index instead of unit id, offsets that accumulate, and lerping x/y instead of track distance.
+- Fix it so that:
+  - interpolation is done per unit id;
+  - the renderer interpolates track distance and converts it with positionAt(), handling the lap wrap, so units never cut corners;
+  - spacing between units happens only along the track, never sideways.
+
+2) Available slots counter: show "N/5" next to the slot row, where N = FREE slots and 5 = inventory.activeSlots.
+- It starts at 5/5, drops by 1 when a unit takes a slot, goes up when a unit dies and frees its slot, and a parked unit keeps its slot counted as used.
+- Derive it from getState().slots and update it on SLOT_STATE_CHANGED.
+- Use a flat minimal style (plain text, no images) with position and size in render config.
+
+3) Missing lose condition: when all 5 slots are filled with parked units, the reserve can't launch but the game never ends.
+- Add rules.loseMode ('allSlotsBlocked' | 'deadlock'), default 'allSlotsBlocked':
+  - allSlotsBlocked: LOSE with reason "slots_blocked" as soon as all 5 slots are BLOCKED and no unit is moving, even if parked units could still be relaunched.
+  - deadlock: LOSE only if, in that same state, no parked unit can hit any block on a lap (no lane on any side has the unit's color as its first non-empty cell).
+- In both modes, keep "out_of_units": the reserve is empty, nothing is moving, the grid is not cleared, and no parked unit can hit any block.
+- Evaluate lose after win at the end of every step. LEVEL_LOST must fire exactly once, block further commands and show the "Out of space" overlay with Retry.
+
+Tests:
+- Several units launched together stay on the track path.
+- The counter values are derived correctly from slot states.
+- Filling all 5 slots with parked units triggers LOSE in 'allSlotsBlocked' mode.
+- In 'deadlock' mode, a useful parked unit prevents LOSE and a fully blocked set triggers it.
+- LEVEL_LOST fires exactly once.
+- WIN still beats LOSE in the same step.
+
+Keep npm test green and the build clean. Update the README v1 values table with the new Config keys. Report the root cause of bug 1 and propose a commit message.
+
+=== 2026-09-11T00:38:51-05:00 | session 567fdf5c ===
+Task: set the game progression to exactly 3 levels, add 2 new pixel-art levels, and loop back to Level 1 after the last win. Keep src/core pure and deterministic, and put every new value in Config.js.
+
+1) Progression: Level 1 = the current first level, Level 2 = "Panda", Level 3 = "Carrot". Remove the other levels (including Watermelon) from the progression, but keep their files so the debug level select can still load them.
+
+2) Level matrices: I extracted these from the reference images by sampling each grid cell (white cells = cells enclosed by the outline). Compare them against assets/reference/panda.jpeg and assets/reference/carrot.png and report any mismatch before writing the levels. Row 0 = top, 0 = empty.
+
+Panda: 24 rows × 22 cols. 1 = black, 2 = white, 3 = green. Blocks: 236 black, 158 white, 26 green.
+[0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0]
+[0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0]
+[0,1,1,1,1,1,2,2,2,2,2,2,2,2,2,1,1,1,1,1,0,0]
+[0,1,1,1,1,2,2,2,2,2,2,2,2,2,2,2,1,1,1,1,0,0]
+[0,1,1,1,2,2,2,2,2,2,2,2,2,2,2,2,2,1,1,1,0,0]
+[0,0,1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,0,0,0]
+[0,0,1,2,2,2,1,1,1,2,2,2,2,2,1,1,2,2,1,0,0,0]
+[0,0,1,2,2,1,1,1,1,2,2,2,2,1,1,1,1,2,1,0,0,0]
+[0,0,1,2,2,1,1,2,1,2,2,2,2,1,2,1,1,2,1,0,0,0]
+[0,0,1,2,2,1,1,1,1,2,1,1,2,1,1,1,1,2,1,0,0,0]
+[0,0,1,2,2,2,1,1,2,2,2,1,2,2,1,1,2,1,3,0,0,0]
+[0,0,0,1,2,2,2,2,2,2,1,1,1,2,2,2,1,1,3,0,3,3]
+[0,0,0,0,1,2,2,2,2,2,2,2,2,2,2,1,1,2,3,3,3,0]
+[0,0,0,0,1,1,1,2,2,2,2,2,2,2,1,3,3,3,3,0,0,0]
+[0,0,0,1,1,1,1,1,1,1,1,1,1,1,3,3,3,1,2,3,3,0]
+[0,0,0,1,1,1,1,1,1,2,2,2,1,3,3,1,1,1,1,0,0,3]
+[0,0,1,2,2,1,1,1,1,1,1,1,3,3,1,1,1,1,1,0,0,0]
+[0,0,1,2,2,2,1,1,1,1,1,1,3,2,2,1,1,1,0,0,0,0]
+[0,1,1,1,1,2,2,1,1,1,1,1,2,2,2,2,1,1,1,1,0,0]
+[1,1,1,1,1,1,2,2,2,3,3,2,2,2,2,1,1,1,1,1,1,0]
+[1,1,1,1,1,1,1,2,3,3,2,2,2,2,2,1,1,1,1,1,1,0]
+[1,1,1,1,1,1,1,2,2,2,2,2,2,2,1,1,1,1,1,1,1,0]
+[0,1,1,1,1,1,1,2,2,2,2,2,2,1,1,1,1,1,1,1,0,0]
+[0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0]
+
+Carrot: 39 rows × 23 cols. 1 = black, 2 = leaf green, 3 = orange, 4 = dark orange, 5 = white, 6 = pink. Blocks: 236 black, 77 green, 201 orange, 11 dark orange, 99 white, 8 pink.
+[0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0]
+[0,0,0,0,0,0,0,0,0,0,0,1,2,2,2,2,1,0,0,0,0,0,0]
+[0,0,0,0,0,0,0,1,1,1,0,1,2,2,2,2,2,1,0,0,0,0,0]
+[0,0,0,0,0,0,1,1,2,2,1,2,2,2,2,2,2,1,0,0,0,0,0]
+[0,0,0,0,0,0,1,2,2,2,1,2,2,2,2,2,2,1,0,0,0,0,0]
+[0,0,0,0,0,0,1,2,2,2,1,2,2,2,2,2,2,1,0,0,0,0,0]
+[0,0,0,0,0,0,1,2,2,2,1,2,2,2,2,2,2,1,0,0,0,0,0]
+[0,0,0,0,0,0,1,2,2,2,1,2,2,2,2,2,2,1,0,0,0,0,0]
+[0,0,0,0,0,0,1,2,2,2,1,2,2,2,2,2,1,0,0,0,0,0,0]
+[0,0,0,0,0,0,0,1,2,2,2,1,2,2,2,2,1,0,0,0,0,0,0]
+[0,0,0,0,0,0,0,1,2,2,2,1,2,2,2,1,1,0,0,0,0,0,0]
+[0,0,0,0,0,0,0,0,1,1,2,1,2,1,1,1,0,0,0,0,0,0,0]
+[0,1,1,1,1,0,0,0,0,0,1,1,2,1,0,0,0,0,1,1,1,1,0]
+[1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1]
+[1,1,1,1,1,1,1,1,3,3,3,3,3,3,3,1,1,1,1,1,1,1,1]
+[1,1,1,1,1,1,1,3,3,3,3,3,3,3,3,3,1,1,1,1,1,1,1]
+[1,1,1,1,1,1,1,3,1,1,1,1,1,1,1,3,1,1,1,1,1,1,1]
+[0,1,1,1,1,1,1,1,5,5,5,5,5,5,5,1,1,1,1,1,1,1,0]
+[0,0,1,1,1,1,1,5,5,5,5,5,5,5,5,5,1,1,1,1,1,0,0]
+[0,1,3,1,1,1,5,5,5,5,5,5,5,5,5,5,5,1,1,1,3,1,0]
+[0,1,3,3,3,1,5,5,5,5,5,5,5,5,5,5,5,1,3,3,3,1,0]
+[1,3,3,3,3,1,5,5,5,5,5,5,5,5,5,5,5,1,3,3,3,3,1]
+[1,3,3,3,1,5,5,5,5,5,5,5,5,5,5,5,5,5,1,3,3,3,1]
+[1,3,3,3,1,5,5,5,5,1,5,5,5,1,5,5,5,5,1,3,3,3,1]
+[1,3,3,3,1,5,6,6,5,1,5,1,5,1,5,6,6,5,1,3,3,3,1]
+[1,3,3,3,1,5,6,6,5,5,5,5,5,5,5,6,6,5,1,3,3,3,1]
+[1,3,3,3,3,1,5,5,5,5,5,5,5,5,5,5,5,1,3,3,3,3,1]
+[1,3,3,3,3,3,1,1,1,1,1,1,1,1,1,1,1,3,3,3,3,3,1]
+[0,1,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,1,0]
+[0,1,1,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,1,1,0]
+[0,0,1,4,4,4,4,4,4,3,3,3,3,3,3,3,3,3,3,3,1,0,0]
+[0,0,1,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,1,0,0]
+[0,0,0,1,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,1,0,0,0]
+[0,0,0,1,4,4,4,4,4,3,3,3,3,3,3,3,3,3,3,1,0,0,0]
+[0,0,0,0,1,1,3,3,3,3,3,3,3,3,3,3,3,1,1,0,0,0,0]
+[0,0,0,0,0,1,3,3,3,3,3,3,3,3,3,3,3,1,0,0,0,0,0]
+[0,0,0,0,0,0,1,3,3,3,3,3,3,3,3,3,1,0,0,0,0,0,0]
+[0,0,0,0,0,0,0,1,1,3,3,3,3,3,1,1,0,0,0,0,0,0,0]
+[0,0,0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0,0,0,0]
+
+3) Palettes and readability: palettes live in render config keyed by level id (same pattern as Watermelon); core level files only store color indices.
+Panda: 1 #0A0A0A, 2 #FFFFFF, 3 #2C6B1A.
+Carrot: 1 #0A0A0A, 2 #8EC7A2, 3 #F48D72, 4 #EA7352, 5 #FFFFFF, 6 #F4C6DF.
+Black and white blocks must both stay readable: use a mid-tone scene background such as #9CC3D5 for both levels, and adjust the empty-cell tile color if contrast is poor.
+These grids are much larger than the other levels. Check that they fit the screen in portrait and that blocks, units and capacity labels (up to 3 digits) stay readable and clickable. If they don't, report it instead of shrinking the art.
+
+4) Reserve: for each level, design a reserve whose total capacity per color matches the block counts exactly, as the existing validation requires. Keep it compact by using higher capacities instead of more units, so the reserve fits on screen. Order the units so the level is winnable, keeping in mind that the black outline blocks the inner colors.
+
+5) Final win: when Level 3 is won, show the same win overlay but replace "Continue +$X" with "Play again +$X". Clicking it adds the Level 3 reward, keeps the accumulated money and loads Level 1, so the whole cycle repeats. The core progression module exposes whether the current level is the last one through getState(); UIManager only picks the button label and sends the command.
+
+Tests: headless WIN runs for Panda and Carrot with scripted launch orders; both levels pass validation; the progression order is Level 1 → Panda → Carrot; winning Level 3 adds the reward exactly once and loads Level 1; a second cycle works. Keep npm test green and the build clean.
+Update the README v1 section (levels list and new Config keys). Report the reserves you chose, any mismatch you found, and a proposed commit message.
+
+=== 2026-09-11T01:07:53-05:00 | session 567fdf5c ===
+Task: rewrite the "v1 – Primitive" section of README.md so it matches the current state of the game. The assignment defines v1 as: "gameplay matches the reference video using primitives only (boxes/spheres/planes). Win state included." Replace the existing v1 section, and leave "v2 – Feel" and "v3 – Polish" as empty headings.
+
+Sources: read CLAUDE.md, src/config/Config.js, src/core/levels/, the git log and /ai_logs so the section describes what actually exists. Don't invent features or values. If something is unclear, ask me instead of guessing.
+
+The section must have 3 required subsections:
+
+1) What changed: what v1 built, in the order it was built.
+- Core mechanics: grid ingested from 2D arrays, one-way perimeter track, units that fire inward at matching colors, a reserve of 4 columns, 5 active slots, win and lose.
+- Interaction rules: only the reserve front row and parked units are pickable; the reserve shifts up one by one; parked units can be relaunched until their capacity reaches 0.
+- Bug fixes, each with its cause: unbalanced levels (the capacity-per-color validation), units drifting off the track, and the missing lose condition (rules.loseMode).
+- Minimal UI: HUD with settings, level and money; "N/5" slots counter; win overlay with the reward; "Out of space" overlay with Retry; "Play again" after Level 3, looping back to Level 1.
+- Levels: the 3-level progression (Level 1, Panda, Carrot) built from pixel art, plus the levels kept outside the progression.
+- Tests: headless test coverage, including the scripted WIN runs.
+
+2) Why it improved feel: explain why these choices make v1 a readable, playable baseline. Cover:
+- the top-down orthographic camera and flat primitive colors;
+- per-level palettes and backgrounds for readability;
+- the fixed timestep and determinism;
+- the one-way track pacing and interpolation along track distance;
+- capacity labels and the slots counter as clear feedback;
+- overlay timing;
+- the strict core/render separation that lets v2, v3 and the Fish of Fortune reskin be config and presentation changes only.
+
+3) Exact values tuned: a Markdown table with the columns Config key | Value | Layer (core/render) | Why.
+- Copy every value exactly from Config.js.
+- Cover speeds, timings, track offset and entry spacing, slot and reserve limits, shots per lane pass, pick and relaunch rules, loseMode, rewards, reserve shift timings, palettes, backgrounds and UI sizes.
+
+Also include:
+- how to run: npm install, npm run dev, npm test;
+- controls;
+- a short architecture overview (core vs presentation, events, snapshots);
+- known limitations and deviations.
+
+Keep it concise, write in English only, and don't change any code. Report what you wrote and propose a commit message.
+
+=== 2026-09-11T01:48:39-05:00 | session 567fdf5c ===
+Task: v2 – Feel. Apply 4 feel changes on top of the v1-primitive tag. Keep src/core pure and deterministic, put every tuned value in Config.js, and record the value before and after each change for the README.
+
+1) Launch straight to the track: tapping a reserve unit sends it directly to the track entry; it no longer stops at a slot first. Slots only receive units that finish a lap with capacity left.
+- The 5-slot limit still applies. A launch is allowed only if (units moving + units parked) < inventory.activeSlots.
+- The "N/5" counter becomes activeSlots − (units moving + units parked). It still drops by 1 on each launch.
+- A unit that finishes a lap with capacity takes the leftmost FREE slot and parks. The limit guarantees one is free.
+- A relaunched parked unit leaves its slot, which becomes FREE, but it still counts as moving.
+- The lose rules (rules.loseMode) behave as before.
+- Update the Unit state machine, InventoryManager and their tests. LAUNCHING now means "reserve → track entry".
+
+2) Faster track: raise units.speedCellsPerSec about 40% as a starting point, then tune until the loop no longer feels slow.
+- Lane-crossing detection must still never skip a lane at the new speed.
+- Shorten render.projectileTravelMs if shots start to lag behind units.
+
+3) Glide instead of stiff movement:
+- React on pointerdown, not click, so the unit starts moving in the same frame as the tap.
+- The launch follows a smooth curve from the reserve cell to the track entry, with ease-out and a short duration (timing.launchToEntryMs plus an easing key).
+- On entering the track, the unit accelerates from the launch speed to cruise speed over units.accelMs instead of snapping to full speed. This is logic, deterministic and tested.
+- The return to a slot, the relaunch and the reserve shift use the same easing style.
+- The triangle turns smoothly to face its direction of travel, including at corners (render.rotationDamping). The logical path doesn't change.
+- Put every easing name, duration and damping value in Config.
+
+4) Final rush: when the reserve is empty (no more units to add), all moving units speed up to finish the board.
+- rules.finalRushSpeedMultiplier: start at 1.8.
+- rules.finalRushRampMs: ramp up with easing, no instant jump.
+- It applies to units already on the track and to any unit relaunched afterwards.
+- It starts once, emits FINAL_RUSH_STARTED and is part of the deterministic simulation.
+
+Tests:
+- A launch goes straight to the track without occupying a slot, and it's rejected when moving + parked = 5.
+- The counter matches the new formula.
+- A returning unit takes the leftmost FREE slot.
+- Acceleration reaches cruise speed at units.accelMs.
+- No lane is skipped at cruise speed or at final-rush speed.
+- The final rush starts exactly once when the reserve empties, and never before.
+- Identical command scripts still produce deep-equal snapshots.
+- The existing WIN and LOSE tests still pass.
+Keep npm test green and the build clean.
+
+README: fill the "v2 – Feel" section with 3 subsections:
+- what changed;
+- why each change improves feel (responsiveness, flow, pacing, end-of-level tension);
+- exact values tuned, as a table with the columns Config key | v1 value | v2 value | Why.
+Don't change the v1 section.
+
+Report the final tuned values and propose a commit message.
+
+=== 2026-09-11T02:40:31-05:00 | session 567fdf5c ===
+Task: write the "v2 – Feel" section of README.md so it matches the current state of the game. The assignment defines v2 as: "improve responsiveness + timing (input, easing, pacing)." Replace any existing v2 content, don't change the v1 section, and leave "v3 – Polish" as an empty heading.
+
+Sources: read src/config/Config.js, the git log and diff since the v1-primitive tag, /ai_logs and the current tests, so the section describes what actually exists. To get the v1 values, read Config.js at the v1-primitive tag (git show v1-primitive:src/config/Config.js). Don't invent features or values. If something is unclear, ask me instead of guessing.
+
+The section must have 3 required subsections:
+
+1) What changed, grouped by input, easing and pacing:
+- Input: units react on pointerdown, in the same frame as the tap. Tapping launches a unit straight to the track instead of stopping at a slot first. Slots now only receive units that finish a lap with capacity left.
+- Rules that came with it: the 5-unit limit (moving + parked), the new "N/5" counter formula, and how relaunched parked units free their slot.
+- Easing: smooth launch curve to the track entry, acceleration to cruise speed, smooth rotation at corners, and the same easing style on return, relaunch and reserve shift.
+- Pacing: faster track speed, projectile timing adjusted to the new speed, and the final rush when the reserve is empty.
+- Any later tuning or fixes made during v2, according to the git log.
+
+2) Why it improved feel: for each change, explain the player-facing problem in v1 and how v2 solves it.
+- Responsiveness: v1's delay between the tap and the movement, and the detour through the slot.
+- Flow: v1's stiff starts and instant speed snaps versus v2's gliding motion.
+- Pacing: v1's slow, boring loop versus v2's faster track.
+- End-of-level tension: v1 dragged on while the last blocks were cleared; the final rush fixes that.
+- Explain why all of this stays deterministic and testable: acceleration and the final rush are logic, easing is presentation.
+
+3) Exact values tuned: a Markdown table with the columns Config key | v1 value | v2 value | Why.
+- Include every key that changed or was added in v2. Write "—" as the v1 value for new keys.
+- Cover: speedCellsPerSec, accelMs, launchToEntryMs, projectileTravelMs, returnToSlotMs, reserve shift timings, easing names, rotationDamping, finalRushSpeedMultiplier, finalRushRampMs, and any input or limit keys.
+- Copy every value exactly from Config.js.
+
+Also add a short "How to compare" note: git checkout v1-primitive to play v1, and the current branch to play v2.
+
+Keep it concise, write in English only, and don't change any code. Report what you wrote and propose a commit message.
+
+=== 2026-09-11T02:49:06-05:00 | session 567fdf5c ===
+Task: fix UI scaling. Right now the camera fits its frustum to the bounds of each level (grid + track + slots + reserve), so on large levels like Carrot the slots, reserve, units and labels shrink. The layout must be identical on every level; only the pixel-art board (grid + track) scales to fit its area. Presentation-only change: src/core, the level files and the core tests must not change.
+
+1) Fixed layout: define a portrait design layout in render config (render.layout), in world units:
+- designWidth and designHeight;
+- boardRegion, slotsRegion and reserveRegion as rects;
+- slotSize, reserveCellSize, unitSize, labelSize and the "N/5" counter position.
+The camera frustum is fitted once to this design layout and never refits on level change.
+
+2) Board scale per level:
+- On level load, compute cellSize = min(boardRegion.w / boardCols, boardRegion.h / boardRows), clamped to render.layout.maxCellSize so small levels don't blow up. boardCols and boardRows include the track and its offset.
+- Center the board inside boardRegion. The renderer maps logic cell units to world through this cellSize and board origin.
+- Blocks, empty tiles, track tiles and block-burst particles scale with cellSize.
+
+3) Constant-size elements: slots, reserve cells, triangles (in the reserve, in slots and on the track), capacity labels, projectiles, confetti and the whole DOM UI keep the same size on every level.
+- A triangle must not change size when it moves from the reserve to the track.
+- On the track it follows the scaled lane positions, but its mesh size stays unitSize.
+
+4) Pure layout module: put the math in src/render/layout/computeLayout.js as a pure function with no three and no DOM: (levelDims, layoutConfig, viewportAspect) → rects, cellSize and board origin. The Renderer and VFX only consume its result.
+
+5) Resize: on window resize, the whole design layout scales uniformly to fit the viewport, keeping aspect (portrait-first, extra space as margin). Relative sizes between the board, slots and reserve never change with the viewport, and resizing never depends on the level.
+
+6) Check every level: Level 1, Panda, Carrot and the levels outside the progression.
+- The board fits inside boardRegion without overlapping the slots, reserve or HUD.
+- Blocks stay readable on Carrot.
+- When debug.enabled, draw the layout region outlines and show cellSize in the debug panel.
+
+Tests (node, no Three.js) for computeLayout:
+- Slot, reserve and unit rects are deep-equal across all levels.
+- The board stays inside boardRegion for every level.
+- cellSize is smaller for bigger grids and clamped for small ones.
+- The board is centered.
+- Changing the viewport aspect scales everything uniformly.
+Keep no-render-imports.test.js, all core tests and the build green.
+
+README: add this fix to the "v3 – Polish" section under what changed (the per-level frustum fit was the cause), and add the new render.layout keys to its values table. Don't change the v1 or v2 sections.
+
+Report the layout values you chose and each level's cellSize, and propose a commit message.
+
+=== 2026-09-11T03:12:59-05:00 | session 567fdf5c ===
+Task: v3 – Polish. Add juice on top of the v2-feel tag: VFX, UI animations and satisfying feedback. Everything is presentation only: src/core and its tests must not change, VFX are driven by getState() snapshots and EventBus events, and every tuned value lives in render config. Keep the primitives-only rule: VFX are built from simple shapes (small spheres, quads, flat rectangles) with no textures or image assets. Don't add npm dependencies; write a small tween/easing helper instead.
+
+1) Architecture for VFX:
+- Create src/render/vfx/ with a VfxManager that listens to events and a VfxFactory that is the only place creating VFX geometries and materials, same as PrimitiveFactory.
+- The projectile effect must be swappable: later it will be replaced by bubbles, and that change should only touch VfxFactory and render config.
+- VFX never mutate game state. They follow the pause and debug time scale, and are cleared on restart and level change.
+
+2) Projectile VFX: on UNIT_FIRED, a small projectile leaves the triangle's tip toward the target block, in the unit's color, with a short fading trail.
+- It travels for render.projectileTravelMs with an easing key. The block reacts on visual impact, not on the logic event.
+- Add a tiny muzzle pop on the triangle when it fires (scale punch).
+
+3) Block destruction:
+- On visual impact, the block flashes white briefly, squashes and scales to 0.
+- A small burst of particles in the block's color spawns around it: short-lived, slight gravity, fade and shrink.
+- Keep the count low per block (render.blockBurstCount), because big levels destroy hundreds of blocks.
+
+4) Capacity number animation: every time a triangle fires, its number animates down.
+- The old number slides or fades out and the new one pops in with a scale punch and a quick color flash.
+- At 0, the triangle does a satisfying death pop (squash, scale down, small particle burst) before it's removed.
+- Only regenerate the label when the number changes; never every frame.
+
+5) Win confetti: when the win overlay appears, fire confetti celebrating the player.
+- Colorful flat rectangles in the level palette that burst from the bottom corners or top, flip, drift and fall, rendered above the win card.
+- The duration and count come from config, and the effect stops cleanly when the overlay closes.
+
+6) UI animations: every UI element gets juicy enter and exit animations with overshoot easing.
+- HUD: slides in at level start; the level label transitions when the level changes.
+- Win overlay: backdrop fades in; the card pops in with overshoot; title, reward and button enter with a short stagger. On Continue or Play again, it plays its exit animation first and only then loads the next level.
+- Lose overlay: same enter and exit pattern, with a softer entrance and a small shake on the "Out of space" title.
+- Buttons: squash on pointerdown and bounce back on release.
+- Money: when the reward is added, a "+$X" label flies from the win card to the money counter, and the counter counts up with a punch.
+- Slots counter: punches when N changes, and flashes when it reaches 0.
+- Settings panel: slides and fades in and out.
+- Input to the game is blocked while an overlay is animating.
+
+7) Optimization (required):
+- One InstancedMesh per VFX type, preallocated up to caps in config (render.vfx.maxProjectiles, maxParticles, maxConfetti). Pool and reuse instances; when a cap is reached, recycle the oldest.
+- Shared geometries and materials. Only update active instances, set mesh.count, and flag instanceMatrix and instanceColor for update once per frame.
+- Zero allocations in the render loop: reuse Vector3, Matrix4 and Color objects, and avoid closures created per frame.
+- DOM animations only animate transform and opacity.
+- Add an "Effects: full / reduced" toggle in settings, and default to reduced when prefers-reduced-motion is set. Reduced lowers particle counts and removes shakes.
+- When debug.enabled: show FPS, draw calls, active particles and renderer.info.memory in the debug panel.
+- Performance check: play the Carrot level with 5 units firing and then the win confetti. Report FPS and draw calls, and confirm renderer.info.memory stays stable after restarting 5 times.
+
+Tests (node, no Three.js):
+- Unit tests for the pure presentation helpers: easing functions, the tween scheduler (start, end, stagger, cancel) and the pool (acquire, release, recycle at cap).
+- no-render-imports.test.js and every core test stay green, and core files are unchanged.
+- The build stays clean.
+
+README: fill the "v3 – Polish" section with 3 subsections:
+- what changed;
+- why each change improves feel (feedback clarity, satisfaction, reward moment, UI flow, performance);
+- exact values tuned, as a table with the columns Config key | v2 value | v3 value | Why. Use "—" for new keys.
+Don't change the v1 or v2 sections.
+
+Report the performance numbers and the final tuned values, and propose a commit message.
+
+=== 2026-09-11T06:29:34-05:00 | session 567fdf5c ===
+Task: add a start screen, remove the effects toggle from settings, and add SFX. All presentation only: src/core, the level files and the core tests must not change, and every new value lives in config. Don't add npm dependencies.
+
+1) Start screen:
+- On page load, show a flat, minimal title screen with the game title (render.ui.titleText) and a big "Play" button. It uses the same style and juicy enter/exit animations as the other v3 overlays.
+- The simulation doesn't run and the HUD is hidden while it's visible.
+- Clicking Play: button squash, the screen plays its exit animation, then Level 1 loads, the HUD slides in and the game starts.
+- Put the flow in a small pure state machine in src/app/AppFlow.js (MENU → PLAYING), with no three and no DOM. main.js only advances the simulation in PLAYING.
+- "Play again" after Level 3 keeps its current behavior and does not return to the start screen.
+
+2) Settings: remove the "Effects: full / reduced" toggle from the settings panel.
+- Keep the config key and default it to full.
+- Still switch to reduced automatically when prefers-reduced-motion is set, without any visible option.
+- Add a "Sound: on / off" toggle in its place.
+
+3) SFX architecture:
+- Create src/audio/ with an AudioManager that listens to EventBus events and UI actions, and a SfxBank that is the only place defining sounds. For FoF, sounds are replaced by editing only SfxBank and config.
+- Generate the sounds procedurally with the Web Audio API (oscillators, noise, simple envelopes and filters), with no audio files, keeping the primitive spirit of this version. SfxBank must also support loading audio files from /assets later.
+- Create and resume the AudioContext on the Play click, which satisfies the browser autoplay policy.
+- One master gain plus sfx volume in config. The sound toggle mutes the master gain. Sounds follow pause and the debug time scale.
+
+4) Sounds (short, soft and satisfying; every pitch, duration and volume in config):
+- UI: button tap, overlay whoosh on enter and exit, Play button confirm.
+- Launch: soft whoosh when a unit leaves the reserve.
+- Fire: short "pew" on UNIT_FIRED, with a small random pitch variation.
+- Block break: a crisp pop on visual impact. Pitch rises slightly on consecutive breaks within render.audio.comboWindowMs and resets after it.
+- Capacity tick when the number drops, and a bigger pop when a unit dies at 0.
+- Park: soft thud when a unit returns to a slot.
+- Slots counter reaching 0: a subtle warning tone.
+- Final rush start: rising swoosh.
+- Win: short cheerful fanfare synced with the confetti, plus coin ticks while the money counts up.
+- Lose: soft descending tone.
+
+5) Audio optimization (required):
+- Cap simultaneous voices (render.audio.maxVoices) and set a minimum interval per sound (minIntervalMs), so Carrot's hundreds of block breaks don't stack. When a cap is hit, skip or merge sounds instead of queuing them.
+- Disconnect finished nodes; create no persistent nodes per sound.
+- Show active voices in the debug panel when debug.enabled.
+
+Tests (node, no Web Audio, no DOM):
+- AppFlow: starts in MENU, Play moves to PLAYING, and there is no simulation step while in MENU.
+- The pure audio scheduling helpers: voice cap, minInterval throttle, combo pitch rise and reset, and mute.
+- no-render-imports.test.js, all core tests and the build stay green.
+
+Check: start screen → Play → Level 1; sound works after Play; the toggle mutes and unmutes; the effects toggle is gone; Carrot with 5 units firing has no audio crackle or FPS drop.
+
+README: add these changes to the "v3 – Polish" section (what changed, why it improves feel, and the new config keys in the values table). Don't change the v1 or v2 sections.
+
+Report the sounds you created and their tuned values, and propose a commit message.
+
+=== 2026-09-11T07:23:23-05:00 | session 567fdf5c ===
+Task: audit and complete the v3 documentation so v3-polish can be closed. Don't change any game code; only README.md may change.
+
+1) Gather what v3 actually did:
+- The git log and diff since the v2-feel tag.
+- Config.js now vs. at v2-feel (git show v2-feel:src/config/Config.js).
+- /ai_logs and the current tests.
+
+2) Check that the "v3 – Polish" section covers every v3 change. Add anything missing and correct anything that doesn't match the code:
+- VFX architecture (VfxManager, VfxFactory, swappable projectile for future bubbles).
+- Projectile, muzzle pop, block flash and particle burst, unit death pop.
+- Capacity number animation.
+- Win confetti.
+- UI enter/exit animations, button squash, money fly and count-up, slots counter punch, settings panel animation, input blocked during overlays.
+- Optimization: instancing, pools and caps, zero allocations in the loop, debug perf panel, and the performance numbers measured on Carrot.
+- UI scaling fix: its cause (per-level frustum fit), the fixed design layout, board-only scaling and computeLayout.
+- Start screen and AppFlow.
+- Settings: effects toggle removed (auto-reduced with prefers-reduced-motion), sound toggle added.
+- SFX: AudioManager, SfxBank, procedural Web Audio sounds, the list of sounds, voice cap, throttling and combo pitch.
+- Any other fix or tuning found in the git log.
+
+3) The section must keep the 3 required subsections from the assignment:
+- What changed.
+- Why it improved feel: for each change, the player-facing benefit (feedback clarity, satisfaction, reward moment, UI flow, consistency across levels, audio feedback, performance).
+- Exact values tuned: one table with the columns Config key | v2 value | v3 value | Why, with every key changed or added in v3, "—" as the v2 value for new keys, and values copied exactly from Config.js.
+
+4) Check the whole README:
+- v1 and v2 sections are unchanged and still accurate.
+- How to run (npm install, npm run dev, npm test, npm run build) and controls include the start screen and the sound toggle.
+- A "How to compare" note lists the tags v1-primitive, v2-feel and v3-polish.
+- Known limitations are up to date.
+- /ai_logs has .txt files for the v3 prompts. If any are missing, list them; don't invent content.
+
+5) Verify: npm test and npm run build are green, and every Config key in the README tables exists in Config.js with the same value.
+
+Report:
+- what you added or corrected;
+- any missing ai_logs;
+- the verification results;
+- a proposed commit message and the exact commands to commit and create the v3-polish tag.
+Don't run the commit or tag commands yourself.
+

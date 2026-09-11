@@ -2,15 +2,37 @@ import { createConfig } from '../../src/config/Config.js';
 import { createGame } from '../../src/core/createGame.js';
 
 /**
- * Game wired for deterministic tests: speed 1 cell/s and fixedStep 1 s => one step() == one cell of
- * travel; launch/eat delays 0 so a unit is on the track the step after activation.
- * No canvas, no Three.js, no DOM -- only the core graph.
+ * Test base: speed 1 cell/s and fixedStep 1 s => one step() == one cell; no launch flight, eat pause, acceleration
+ * ramp or final-rush speed-up, and no launch spacing, so units activated together run in lockstep (rule tests rely on
+ * it; each feel mechanic has its own tests with its own overrides). FINAL_RUSH_STARTED still fires (factor 1).
  */
-export function createTestGame({ level = null, config: overrides = {} } = {}) {
-  const config = createConfig({
-    track: { speed: 1 },
-    timing: { fixedStep: 1, launchDelay: 0, eatDuration: 0 },
-    ...overrides,
-  });
-  return createGame({ config, level });
+export const TEST_OVERRIDES = Object.freeze({
+  track: { speed: 1, launchSpacing: 0 },
+  units: { accelMs: 0 },
+  timing: { fixedStep: 1, launchToEntryMs: 0, eatDuration: 0 },
+  rules: { finalRushSpeedMultiplier: 1 },
+});
+
+const isPlain = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+function mergeDeep(base, extra) {
+  const out = { ...base };
+  for (const [key, value] of Object.entries(extra)) {
+    out[key] = isPlain(base[key]) && isPlain(value) ? mergeDeep(base[key], value) : value;
+  }
+  return out;
+}
+
+/** Test base merged with partial overrides (a partial `timing` no longer wipes the base timing). */
+export function createTestConfig(overrides = {}) {
+  return createConfig(mergeDeep(TEST_OVERRIDES, overrides));
+}
+
+/**
+ * Game wired for deterministic tests. No canvas, no Three.js, no DOM -- only the core graph.
+ * @param {{ level?: object|null, levels?: object[]|null, config?: object }} [opts] `levels` is a progression list;
+ *   `config` holds partial overrides on top of the test base
+ */
+export function createTestGame({ level = null, levels = null, config: overrides = {} } = {}) {
+  return createGame({ config: createTestConfig(overrides), level, levels });
 }

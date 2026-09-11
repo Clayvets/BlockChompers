@@ -38,7 +38,7 @@ export function simulateRun(snapshot, unitId, config) {
 /**
  * Reserve unit ids whose activation would consume at least one block.
  * Single-unit heuristic: it ignores runners already on the track and cannot prove a level
- * unsolvable (that needs multi-unit sequencing). See Config.rules.detectDeadEndsEarly.
+ * unsolvable (that needs multi-unit sequencing); use it for hints only. LOSE is the deadlock in GameManager.isLost.
  * @returns {string[]}
  */
 export function findValidMoves(snapshot, config) {

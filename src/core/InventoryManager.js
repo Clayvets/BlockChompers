@@ -2,18 +2,37 @@ import { Unit, UnitState } from './Unit.js';
 import { RejectReason } from './Events.js';
 
 /**
- * Owns the unit registry, the 4xN reserve grid and the 5 active slots.
+ * Available-slot counter ("N/5") from a unit list (e.g. snapshot.units): N = total - (units moving + units parked).
+ * Moving units hold no slot but still count, so the counter drops on every launch.
+ * @param {Array<{ state: string }>} units
+ * @param {number} total Config.inventory.activeSlots (= snapshot.slots.length)
+ * @returns {{ free: number, total: number }}
+ */
+export function countAvailableSlots(units, total) {
+  const used = units.filter((u) => USED_STATES.has(u.state)).length;
+  return { free: Math.max(0, total - used), total };
+}
+
+const USED_STATES = new Set([UnitState.LAUNCHING, UnitState.RUNNING, UnitState.EATING, UnitState.RETURNED]);
+
+/**
+ * Owns the unit registry, the 4xN reserve grid and the 5 parking slots.
  * Pure bookkeeping: it never decides WHEN something happens (GameManager does).
  *
- * Slot status: 'free' -> 'occupied' (unit activated) -> 'free' (unit died) | 'blocked' (unit returned, permanent).
- * `version` is monotonic for the life of the manager (a reload never resets it).
+ * Limit: a launch needs (moving + parked) < activeSlots. Moving units hold no slot.
+ * Slot status: 'free' -> 'blocked' when a unit finishes a lap with capacity left and parks in the leftmost free slot;
+ *              'blocked' -> 'free' when that unit is relaunched (it keeps counting as moving).
+ * Reserve columns are queues: row 0 is the front; when a unit leaves, the units behind it move up one cell.
+ * `version` is monotonic for the life of the manager (a reload never resets it) and bumps on every change that the
+ * renderer may draw (launch, relaunch, park, death, reserve shift).
  */
 export class InventoryManager {
   /** @type {Map<string, Unit>} insertion order = definition order */
   #units = new Map();
-  /** @type {Array<{ index: number, status: 'free'|'occupied'|'blocked', unitId: string|null }>} */
+  /** @type {Array<{ index: number, status: 'free'|'blocked', unitId: string|null }>} */
   #slots = [];
   #unitCount = 0;
+  #launchCounter = 0;
 
   constructor({ config }) {
     this.config = config;
@@ -49,6 +68,7 @@ export class InventoryManager {
     });
     this.#units = units;
     this.#unitCount = unitDefs.length;
+    this.#launchCounter = 0;
     this.#slots = Array.from({ length: this.activeSlotCount }, (_, index) => ({ index, status: 'free', unitId: null }));
     this.version += 1;
     return this.getAllUnits();
@@ -73,11 +93,11 @@ export class InventoryManager {
     return this.getAllUnits().filter((unit) => unit.state === UnitState.RESERVE);
   }
 
-  /** Units occupying a slot and in motion or about to be (ACTIVE | RUNNING | EATING), sorted by slot index. */
+  /** Moving units (LAUNCHING | RUNNING | EATING), in launch order. */
   getRunners() {
     return this.getAllUnits()
       .filter((unit) => unit.isRunner())
-      .sort((a, b) => a.slotIndex - b.slotIndex);
+      .sort((a, b) => a.launchSeq - b.launchSeq);
   }
 
   /** @returns {Array<{ index: number, status: string, unitId: string|null }>} copies, not live objects */
@@ -85,7 +105,7 @@ export class InventoryManager {
     return this.#slots.map((slot) => ({ ...slot }));
   }
 
-  /** Lowest free slot index, or -1. */
+  /** Leftmost (lowest-index) free slot, or -1. */
   findFreeSlot() {
     const slot = this.#slots.find((s) => s.status === 'free');
     return slot ? slot.index : -1;
@@ -95,48 +115,115 @@ export class InventoryManager {
     return this.findFreeSlot() !== -1;
   }
 
-  /**
-   * RESERVE -> ACTIVE and occupy the lowest free slot. Never throws.
-   * @returns {{ ok: boolean, slotIndex: number, reason?: string }}
-   */
-  activate(unitId) {
-    const unit = this.#units.get(unitId);
-    if (!unit) return { ok: false, slotIndex: -1, reason: RejectReason.UNKNOWN_UNIT };
-    if (unit.state !== UnitState.RESERVE) return { ok: false, slotIndex: -1, reason: RejectReason.NOT_IN_RESERVE };
-    const slotIndex = this.findFreeSlot();
-    if (slotIndex === -1) return { ok: false, slotIndex: -1, reason: RejectReason.NO_FREE_SLOT };
-
-    const slot = this.#slots[slotIndex];
-    slot.status = 'occupied';
-    slot.unitId = unitId;
-    unit.state = UnitState.ACTIVE;
-    unit.slotIndex = slotIndex;
-    if (this.config.inventory.compactReserve) this.#compact();
-    this.version += 1;
-    return { ok: true, slotIndex };
+  /** Units counting against the limit: moving + parked. */
+  inUse() {
+    return this.getAllUnits().filter((unit) => USED_STATES.has(unit.state)).length;
   }
 
-  /** Re-lay the remaining reserve units row-major from the front (inventory.compactReserve). */
-  #compact() {
-    this.getReserve().forEach((unit, i) => {
-      unit.reservePos = this.#reservePosFor(i);
+  /** activeSlots - (moving + parked): what the "N/5" counter shows. */
+  available() {
+    return Math.max(0, this.activeSlotCount - this.inUse());
+  }
+
+  /** True while another unit may launch: (moving + parked) < activeSlots. */
+  hasRoom() {
+    return this.inUse() < this.activeSlotCount;
+  }
+
+  /**
+   * RESERVE -> LAUNCHING: the unit flies straight to the track entry and takes no slot. Needs room under the limit.
+   * The units behind it in its column move up one cell. Never throws; `shifted` lists those moves, front to back.
+   * @returns {{ ok: boolean, reason?: string, shifted?: Array<{ unitId: string, from: object, to: object }> }}
+   */
+  launch(unitId) {
+    const unit = this.#units.get(unitId);
+    if (!unit) return { ok: false, reason: RejectReason.UNKNOWN_UNIT };
+    if (unit.state !== UnitState.RESERVE) return { ok: false, reason: RejectReason.NOT_IN_RESERVE };
+    if (!this.hasRoom()) return { ok: false, reason: RejectReason.NO_FREE_SLOT };
+    unit.state = UnitState.LAUNCHING;
+    unit.launchOrigin = { kind: 'reserve', ...unit.reservePos };
+    this.#launchCounter += 1;
+    unit.launchSeq = this.#launchCounter;
+    const shifted = this.#shiftColumnUp(unit.reservePos);
+    this.version += 1;
+    return { ok: true, shifted };
+  }
+
+  /** Reserve units behind a vacated cell (same column, larger row) move up one cell, front to back. */
+  #shiftColumnUp({ col, row }) {
+    const behind = this.getReserve()
+      .filter((u) => u.reservePos.col === col && u.reservePos.row > row)
+      .sort((a, b) => a.reservePos.row - b.reservePos.row);
+    return behind.map((u) => {
+      const from = { ...u.reservePos };
+      u.reservePos = { col, row: from.row - 1 };
+      return { unitId: u.id, from, to: { ...u.reservePos } };
     });
   }
 
-  /** Unit died: the slot becomes free again. */
-  release(slotIndex) {
-    const slot = this.#slots[slotIndex];
-    if (!slot) return;
-    slot.status = 'free';
-    slot.unitId = null;
-    this.version += 1;
+  /** Reserve units at the front (row 0) of their column. */
+  getFrontUnits() {
+    return this.getReserve().filter((u) => u.reservePos.row === 0);
   }
 
-  /** Unit returned with capacity left: the slot is blocked for the rest of the level (unitId kept). */
-  block(slotIndex) {
+  /** True for a reserve unit at the front of its column. */
+  isFront(unitId) {
+    const unit = this.#units.get(unitId);
+    return Boolean(unit) && unit.state === UnitState.RESERVE && unit.reservePos.row === 0;
+  }
+
+  /** Units parked in a slot after a lap with capacity left (state RETURNED), by slot index. */
+  getParked() {
+    return this.getAllUnits()
+      .filter((u) => u.state === UnitState.RETURNED)
+      .sort((a, b) => a.slotIndex - b.slotIndex);
+  }
+
+  /**
+   * A moving unit finished its lap with capacity left: RETURNED in the leftmost free slot, which becomes 'blocked'.
+   * The limit guarantees a free slot (the unit was counted while moving); running out means a broken invariant.
+   * @returns {number} the slot index
+   */
+  park(unitId) {
+    const unit = this.#units.get(unitId);
+    const slotIndex = this.findFreeSlot();
+    if (!unit || slotIndex === -1) throw new Error(`InventoryManager.park(${unitId}): no free slot`);
     const slot = this.#slots[slotIndex];
-    if (!slot) return;
     slot.status = 'blocked';
+    slot.unitId = unitId;
+    unit.state = UnitState.RETURNED;
+    unit.slotIndex = slotIndex;
+    this.version += 1;
+    return slotIndex;
+  }
+
+  /**
+   * Send the unit parked in `slotIndex` back out: RETURNED -> LAUNCHING, and the slot becomes 'free'. The unit keeps
+   * its capacity and still counts against the limit while it moves. Never throws.
+   * @returns {{ ok: boolean, unitId?: string, reason?: string }}
+   */
+  relaunch(slotIndex) {
+    const slot = this.#slots[slotIndex];
+    if (!slot) return { ok: false, reason: RejectReason.UNKNOWN_SLOT };
+    const unit = slot.status === 'blocked' ? this.#units.get(slot.unitId) : undefined;
+    if (!unit || unit.state !== UnitState.RETURNED) return { ok: false, reason: RejectReason.NOT_PARKED };
+    slot.status = 'free';
+    slot.unitId = null;
+    unit.state = UnitState.LAUNCHING;
+    unit.slotIndex = null;
+    unit.launchOrigin = { kind: 'slot', index: slotIndex };
+    this.#launchCounter += 1;
+    unit.launchSeq = this.#launchCounter;
+    this.version += 1;
+    return { ok: true, unitId: unit.id };
+  }
+
+  /** Capacity reached 0: DEAD, which frees its place under the limit. */
+  retire(unitId) {
+    const unit = this.#units.get(unitId);
+    if (!unit) return;
+    unit.state = UnitState.DEAD;
+    unit.speed = 0;
     this.version += 1;
   }
 
@@ -148,8 +235,15 @@ export class InventoryManager {
     return this.getAllUnits().some((unit) => unit.state === UnitState.RESERVE);
   }
 
-  /** @returns {{ reserveCols: number, reserveRows: number, slots: Array<object>, version: number }} */
+  /** @returns {{ reserveCols: number, reserveRows: number, slots: Array<object>, version: number, inUse: number, available: number }} */
   toState() {
-    return { reserveCols: this.reserveCols, reserveRows: this.reserveRows, slots: this.getSlots(), version: this.version };
+    return {
+      reserveCols: this.reserveCols,
+      reserveRows: this.reserveRows,
+      slots: this.getSlots(),
+      version: this.version,
+      inUse: this.inUse(),
+      available: this.available(),
+    };
   }
 }

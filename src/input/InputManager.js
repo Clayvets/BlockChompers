@@ -1,6 +1,6 @@
 /**
  * Translates pointer input into logical commands. Knows nothing about Three.js: the renderer does
- * the raycast (pick); this class only forwards the result to GameManager.
+ * the raycast (pick); this class only forwards unit hits to GameManager.activateUnit.
  */
 export class InputManager {
   #enabled = true;
@@ -9,7 +9,7 @@ export class InputManager {
   /**
    * @param {{ canvas: HTMLCanvasElement,
    *           renderer: { pick(ndcX: number, ndcY: number): object|null },
-   *           gameManager: { activateUnit(id: string): { ok: boolean, reason?: string } } }} deps
+   *           gameManager: { activateUnit(id: string): object, launchFromSlot(slotIndex: number): object } }} deps
    */
   constructor({ canvas, renderer, gameManager }) {
     this.canvas = canvas;
@@ -30,14 +30,27 @@ export class InputManager {
     this.#enabled = enabled;
   }
 
-  /** Pointer event -> normalised device coords in [-1, 1]. */
+  /** Pointer event -> normalised device coords in [-1, 1] (y up). */
   toNdc(event) {
-    // TODO(impl)
-    return { x: 0, y: 0 };
+    const rect = this.canvas.getBoundingClientRect();
+    return {
+      x: ((event.clientX - rect.left) / rect.width) * 2 - 1,
+      y: -((event.clientY - rect.top) / rect.height) * 2 + 1,
+    };
   }
 
-  /** if enabled: renderer.pick(ndc) -> kind === 'unit' => gameManager.activateUnit(id). Everything else is ignored. */
+  /**
+   * Primary-button press: a front reserve unit => gameManager.activateUnit(id); a parked unit or its slot =>
+   * gameManager.launchFromSlot(slotIndex). Nothing else is a raycast target.
+   * @returns {{ ok: boolean, reason?: string } | null} the command result, or null when nothing was issued
+   */
   handlePointerDown(event) {
-    // TODO(impl)
+    if (!this.#enabled || event.button > 0) return null;
+    const { x, y } = this.toNdc(event);
+    const hit = this.renderer.pick(x, y);
+    if (!hit) return null;
+    if (hit.kind === 'unit') return this.gameManager.activateUnit(hit.id);
+    if (hit.kind === 'slot') return this.gameManager.launchFromSlot(hit.id);
+    return null;
   }
 }

@@ -12,19 +12,159 @@
       }
       canvas {
         display: block;
+        touch-action: none; /* taps go straight to pointerdown: no pan, zoom or double-tap delay */
       }
+      /* Win confetti: its own transparent canvas above the UI (Config.render.vfx.confetti). */
+      #canvas-fx {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 2;
+        pointer-events: none;
+      }
+      /* Layout only. Colours and sizes are CSS custom properties published from Config.ui by UIManager; animations are
+         Web Animations on transform and opacity, driven by Config.ui.anim. */
       #ui-root {
         position: fixed;
         inset: 0;
-        pointer-events: none; /* overlay children that need clicks opt back in */
-        font: 16px/1.4 system-ui, sans-serif;
-        color: #fff;
+        z-index: 1;
+        pointer-events: none; /* only buttons and modals take clicks */
+        font-family: system-ui, sans-serif;
+        font-size: var(--ui-size-font);
+        color: var(--ui-color-text);
+        user-select: none;
+      }
+      #ui-root [hidden] {
+        display: none !important;
+      }
+      #ui-root button {
+        font: inherit;
+        color: inherit;
+        border: 0;
+        cursor: pointer;
+        pointer-events: auto;
+      }
+      #ui-root button:disabled {
+        cursor: default;
+        opacity: var(--ui-disabled-opacity);
+      }
+      #ui-root .bar {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: var(--ui-size-bar-height);
+        padding: 0 var(--ui-size-bar-padding);
+        background: var(--ui-color-bar);
+        box-sizing: border-box;
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        align-items: center;
+      }
+      #ui-root .icon-button {
+        justify-self: start;
+        width: var(--ui-size-icon-button);
+        height: var(--ui-size-icon-button);
+        border-radius: var(--ui-size-radius);
+        background: var(--ui-color-panel);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: var(--ui-size-icon-bar-gap);
+      }
+      #ui-root .icon-bar {
+        width: var(--ui-size-icon-bar-width);
+        height: var(--ui-size-icon-bar-height);
+        background: var(--ui-color-text);
+      }
+      #ui-root .bar-level {
+        font-weight: 600;
+      }
+      #ui-root .bar-money {
+        justify-self: end;
+        font-weight: 600;
+        color: var(--ui-color-money);
+        font-variant-numeric: tabular-nums;
+      }
+      #ui-root .modal {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--ui-color-backdrop);
+        pointer-events: auto; /* blocks input to the game underneath */
+      }
+      #ui-root .card {
+        width: var(--ui-size-card-width);
+        max-width: calc(100% - 2 * var(--ui-size-card-padding));
+        padding: var(--ui-size-card-padding);
+        box-sizing: border-box;
+        border-radius: var(--ui-size-radius);
+        background: var(--ui-color-panel);
+        display: flex;
+        flex-direction: column;
+        gap: var(--ui-size-gap);
+        text-align: center;
+      }
+      #ui-root .card-title {
+        margin: 0;
+        font-size: var(--ui-size-title-font);
+      }
+      #ui-root .card-reward,
+      #ui-root .fly-label {
+        font-size: var(--ui-size-title-font);
+        font-weight: 700;
+        color: var(--ui-color-money);
+        font-variant-numeric: tabular-nums;
+      }
+      #ui-root .fly-label {
+        position: absolute;
+        left: 0;
+        top: 0;
+        pointer-events: none;
+        white-space: nowrap;
+      }
+      #ui-root .card,
+      #ui-root .fly-label {
+        will-change: transform, opacity;
+      }
+      #ui-root .modal[data-result='won'] .card-title { color: var(--ui-color-won); }
+      #ui-root .modal[data-result='lost'] .card-title { color: var(--ui-color-lost); }
+      #ui-root .button {
+        padding: var(--ui-size-button-pad-y) var(--ui-size-button-pad-x);
+        border-radius: var(--ui-size-radius);
+        background: var(--ui-color-button);
+        color: var(--ui-color-button-text);
+        font-weight: 600;
+      }
+      #ui-root .button-secondary {
+        background: var(--ui-color-button-secondary);
+        color: var(--ui-color-button-secondary-text);
+      }
+      /* Start screen: the same modal and card, darker backdrop, big title and Play button. */
+      #ui-root .modal-start {
+        background: var(--ui-color-title-backdrop);
+      }
+      #ui-root .modal-start .card {
+        width: var(--ui-size-start-card-width);
+      }
+      #ui-root .modal-start .card-title {
+        font-size: var(--ui-size-start-title-font);
+        color: var(--ui-color-title);
+      }
+      #ui-root .button-play {
+        padding: var(--ui-size-play-pad-y) var(--ui-size-button-pad-x);
+        font-size: var(--ui-size-play-font);
       }
     </style>
   </head>
   <body>
     <canvas id="canvas-game"></canvas>
     <div id="ui-root"></div>
+    <canvas id="canvas-fx"></canvas>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>
