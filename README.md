@@ -303,26 +303,76 @@ Values are copied from `src/config/Config.js` at v1-primitive and on the current
 
 Goal: add juice on top of v2, meaning effects, UI animation, sound and satisfying feedback, plus a start screen,
 without touching the rules. All of v3 is presentation. `src/core`, the level files and their tests are unchanged,
-effects and sounds react to snapshots and events, and every value lives in `Config.render` or `Config.ui`.
+effects and sounds react to snapshots and events, and every value lives in `Config.render`, `Config.ui` or
+`Config.debug`.
+
+**How to compare:** each version is tagged, and all three use the same dependencies, so no reinstall is needed.
+
+```bash
+git checkout v1-primitive    # play v1
+git checkout v2-feel         # play v2
+git checkout v3-polish       # play v3
+npm run dev                  # after any checkout
+git checkout primitive-core  # back to the working branch
+```
+
+This note replaces the one in the v2 section: `primitive-core` now holds v3, so use `v2-feel` to play v2.
+
+### How to run
+
+```bash
+npm install
+npm run dev      # http://localhost:5173
+npm test         # headless tests (Vitest, in Node: no DOM or WebGL)
+npm run build    # production bundle in dist/
+npm run preview  # serve dist/ at http://localhost:4173
+```
+
+Node 22.12 or newer. The build warns that the bundle is over 500 kB: Three.js is bundled whole, and that is
+expected. Add `?level=<id>` to the URL to play one level on its own: `watermelon`, `panda`, `carrot` or `starter`.
+In `src/config/Config.js`, `debug.enabled: true` outlines the layout regions and shows a panel with the cellSize,
+FPS, draw calls, particles, GPU memory and sound voices, and `debug.timeScale` slows the simulation, the effects and
+the board sounds (0.25 is quarter speed).
+
+### Controls
+
+Mouse or touch; there are no keyboard shortcuts.
+
+- **Start:** the start screen's Play button starts Level 1 and turns sound on (browsers allow audio only after a
+  click).
+- **Launch:** click a unit in the front row of the reserve. It flies straight to the track entry. The "N/5" counter
+  shows how many more units can be out at once; at 0 the click is refused.
+- **Relaunch:** click a parked unit, or its red slot, to send it round again with the capacity it has left.
+- **Settings:** the button at the top left pauses the game and offers Resume, Restart level and "Sound: on / off".
+- **End of level:** the win card shows the "+$50" reward and Continue ("Play again" on Level 3). The reward flies into
+  the money and the next level loads. The lose card's Retry restarts the level.
 
 ### What changed
 
-1. **Fixed layout (UI scaling fix).** Cause: the camera fitted its frustum to each level's bounds, so a big level
-   zoomed everything out and shrank the slots, reserve, units and labels. Now one portrait design (`render.layout`)
-   is fitted once per viewport, only the board (grid plus track ring) scales to its region, and everything else keeps
-   one size on every level.
+1. **Fixed layout (UI scaling fix).** Cause: the camera fitted its frustum to each level's bounds (grid, track, slots
+   and reserve), so a big level zoomed everything out and shrank the slots, reserve, units and labels. Now one
+   portrait design of 10 x 20 design units (`render.layout`) holds a region for the board, the slot row and the
+   reserve. The camera fits that design once per viewport size, scaled uniformly with any extra space as margin, and
+   never refits on a level change. Only the board (grid plus track ring) scales:
+   `cellSize = min(boardRegion.w / boardCols, boardRegion.h / boardRows, maxCellSize)`, centred in its region. Blocks
+   and track tiles scale with it. Slots, reserve cells, units, labels and the "N/5" counter keep one size on every
+   level, so a unit no longer changes size between the reserve and the track. The math is a pure function,
+   `src/render/layout/computeLayout.js` (no Three.js, no DOM, tested in Node), and the Renderer only consumes its
+   result. With `debug.enabled`, the renderer outlines the regions and a new debug panel shows the level's cellSize.
 
-   | Level | Board incl. ring | cellSize | Cell on a 390 x 844 phone |
+   | Level | Board incl. ring (columns x rows) | cellSize | Cell on a 390 x 844 phone |
    |---|---|---|---|
    | Level 1 (Watermelon) | 20 x 19 | 0.46 | 17.9 px |
    | Panda | 24 x 26 | 0.3833 | 14.9 px |
    | Carrot | 25 x 41 | 0.2927 | 11.4 px |
    | Starter | 7 x 5 | 0.75 (clamped) | 29.3 px |
 
-2. **Effects architecture.** `src/render/vfx/`: `VfxManager` listens to events and never touches game state, and
-   `VfxFactory` is the only place that creates effect geometries and materials. Changing the projectile look (a ball
-   today, bubbles later) means one factory method plus render config. Effects run on a presentation clock that stops
-   while paused, follows `debug.timeScale`, and clears on restart and level change. Pure helpers live in
+2. **Effects architecture.** `src/render/vfx/` holds three modules. `VfxManager` reacts to `BLOCK_CONSUMED` (a
+   shot), `UNIT_DIED` (death sparks) and `LEVEL_LOADED` (clear everything). It borrows block meshes and unit positions
+   through Renderer host methods and never touches game state. `VfxFactory` is the only place that creates effect
+   geometries and materials, so changing the projectile look (a ball today, bubbles later) means one factory method
+   plus render config. `ConfettiLayer` draws the win confetti. Effects run on a presentation clock that stops while
+   paused, follows `debug.timeScale`, and clears on restart and level change. Pure helpers live in
    `src/render/anim/`: easing with overshoot curves, a pooled tween scheduler and a fixed-capacity pool.
 3. **Projectiles.** When a unit eats a block, a small ball in its colour leaves the triangle's tip with a short trail
    of fading sparks and reaches the block in 110 ms, speeding up as it goes. The triangle punches its scale as it
@@ -333,19 +383,23 @@ effects and sounds react to snapshots and events, and every value lives in `Conf
    overshoot and a gold flash. The label is redrawn only when the number changes. At 0 the triangle squashes, shrinks
    to nothing and bursts into sparks before it is removed.
 6. **Win confetti.** When the win card appears, 140 rectangles in the level's palette burst from the bottom corners,
-   flip, sway and fall for about 2.8 s, on their own canvas above the card. They fade out fast when the card closes.
+   flip, sway and fall for about 2.8 s. They are drawn on their own transparent canvas (`#canvas-fx`) above the card,
+   and fade out fast when the card closes.
 7. **UI animations.** The HUD slides in at every level start and the level label slides to its new number. On a win
    the backdrop fades in, the card pops in with overshoot, and the title, a new "+$X" reward line and the button enter
-   one after another. Continue or Play again plays the exit first and only then loads the next level, while the
-   "+$X" flies to the money counter, which counts up with a punch. The lose card enters more softly and its title
-   shakes. Buttons squash on press and bounce back. The "N/5" counter punches when it changes and flashes red at 0.
-   The settings panel slides and fades. The board takes no input while an overlay animates.
-8. **Performance and effects level.** One InstancedMesh per effect type, preallocated to its cap and recycled oldest
-   first; shared geometries and materials; only active instances are uploaded, once per frame. The effect and juice
-   code allocates nothing per frame, and DOM animations touch only transform and opacity. Effects are full by default
-   (`render.vfx.effects`); reduced cuts particle and confetti counts to 40% and drops the shake. There is no in-game
-   option: the game switches to reduced when the system asks for reduced motion. With `debug.enabled`, the debug
-   panel adds FPS, draw calls, active particles, GPU memory and sound voices.
+   one after another. The button now reads "Continue" or "Play again"; v1 and v2 put "+$50" on it. Pressing it plays
+   the exit first and only then loads the next level, while the "+$X" flies to the money counter, which counts up
+   with a punch. The lose card enters more softly and its title shakes. Buttons squash on press and bounce back. The
+   "N/5" counter punches when it changes and flashes red at 0. The settings panel slides and fades. The board takes
+   no input while an overlay animates.
+8. **Performance and effects level.** One InstancedMesh per effect type (projectiles, sparks, confetti), preallocated
+   to its cap in `render.vfx` and recycled oldest first. Geometries and materials are shared, and only active
+   instances are uploaded, once per frame. The effect, juice and unit-placement code allocates nothing per frame: it
+   reuses its vectors, matrices and colours, keeps pooled typed arrays, and the placement helpers write into reused
+   objects. Capacity labels are redrawn only when the number changes, and DOM animations touch only transform and
+   opacity. Effects are full by default (`render.vfx.effects`); reduced cuts particle and confetti counts to 40% and
+   drops the shake. There is no in-game option: the game switches to reduced when the system asks for reduced
+   motion. With `debug.enabled`, the debug panel adds FPS, draw calls, active particles, GPU memory and sound voices.
 9. **Start screen.** On page load a flat card shows the title and a big Play button over the darkened first level,
    and the HUD is hidden. It enters like the win card: the backdrop fades in, the card pops with overshoot, and the
    title and button follow one after the other. Play squashes, the card plays its exit, and only then Level 1 loads,
@@ -360,8 +414,9 @@ effects and sounds react to snapshots and events, and every value lives in `Conf
     game events: UI actions from `UIManager` (taps, overlays entering and leaving, Play, the win and lose cards, each
     money tick) and visual moments from the Renderer (a projectile landing, a capacity number dropping, a death pop, a
     unit landing in its slot, the counter reaching 0). Every sound is synthesised with Web Audio from oscillators,
-    filtered noise and simple envelopes, with no audio files. `SfxBank` can also play a file from `assets/sfx/` for
-    any sound whose config entry names a `file`, using the recipe until the file has loaded, so replacing a sound
+    filtered noise and simple envelopes, with no audio files. `SfxBank` can also play an audio file for any sound whose
+    config entry names a `file`, loaded from `render.audio.assetsPath` (`assets/sfx/`, so the file goes in
+    `public/assets/sfx/`). It uses the recipe until the file has loaded, or if it fails, so replacing a sound
     touches only `SfxBank` and config. The AudioContext is created and resumed inside the Play click, which satisfies
     the browser autoplay policy. One master gain, muted by the toggle, sits over an sfx volume gain. Board sounds
     follow pause, because they come from the simulation and the presentation clock, which both stop. They also play
@@ -392,40 +447,69 @@ effects and sounds react to snapshots and events, and every value lives in `Conf
     disconnect themselves when its last source ends. The only persistent nodes are the two gains, plus one shared
     white-noise buffer. Envelopes start from 0 and decay to -80 dB before a source stops, and every sound starts 10 ms
     ahead, so nothing clicks.
-14. **Tests.** 236 headless tests, up from 205 in v2: the layout, the easing curves, the tween scheduler (start, end,
-    stagger, cancel), the pool (acquire, release, recycle at cap), the app flow (starts in MENU, Play moves to
-    PLAYING, no simulation step in MENU) and the audio scheduling (voice cap, minimum interval, combo pitch rise and
-    reset, mute). Core, the level files and their tests are unchanged.
+14. **Tests.** 236 headless tests in 25 files, up from 205 in v2. The 31 new ones cover:
+    - `computeLayout` (7): the same slot, reserve, unit, label and counter rects on every level; every board inside
+      its region and centred, with units on the ring clear of the slots and reserve; regions apart and inside the
+      design; cellSize smaller for bigger grids and clamped for small ones; uniform scaling across viewport aspects.
+    - Easing, tween scheduler and pool (11): curve end points and overshoot; tween start, end, stagger and cancel;
+      pool acquire, release and recycle at cap.
+    - `AppFlow` and `CueBus` (5): starts in MENU, Play moves to PLAYING, no simulation step in MENU, no way back.
+    - `SfxScheduler` and `SfxBank` (8): voice cap, minimum interval, combo pitch rise and reset, mute, pitch jitter,
+      and a length for every configured sound.
+
+    The new helpers are checked to be free of Three.js, the DOM and clocks. Core, the level files and their tests are
+    unchanged.
+15. **Fixes and tuning during v3.** The layout fix (item 1) is the one fix commit; the other two commits are the
+    effects and UI animation, then the start screen and sound. Along the way the win card's copy changed (item 7), the
+    old CSS card fade (`ui.timing.fade`) gave way to the `ui.anim` animations, and the "Effects: full / reduced"
+    button added with the effects was removed again with the sound work, leaving the effects level automatic. Some
+    sounds began with a one-sample click, because a new gain node starts at full volume before its envelope takes
+    over; every envelope now starts from 0.
 
 ### Why it improved feel
 
-- **Feedback clarity.** In v2 a block simply vanished as a unit passed its lane. Now each hit is a visible shot from
-  one unit to one block, the block reacts when the shot lands, the unit's number ticks down with each shot, and the
-  "N/5" counter punches and flashes as room runs out. Sound doubles each of these: a pew as the unit fires, a pop
-  when the shot lands, a tick as the number drops, a thud when a unit parks and two quiet beeps when the counter hits
-  0, so a busy board still reads by ear.
-- **Satisfaction.** Muzzle pops, white flashes, squash and shrink, and small spark bursts make every hit feel physical,
-  and a unit that finishes its job pops instead of blinking out. Breaks in a row rise in pitch, so a streak builds
-  into a small crescendo instead of repeating one note.
-- **Reward moment.** Confetti in the level's own colours over the win card, the reward flying into the money and the
-  count-up punch turn the payout into a moment instead of a number change. A fanfare lands with the confetti, and
-  coin chirps climb with the count-up.
-- **UI flow.** Overshoot entrances and a short stagger lead the eye from title to reward to button. Exits finish
-  before the next level loads, so nothing jumps, and a stray tap during a transition cannot launch a unit. Fixed-size
-  controls keep tap targets and labels readable on the biggest level. The start screen gives the first level a clear
-  beginning: nothing moves behind it, the same Play click turns sound on, and the HUD arrives with the level. Taps
-  and whooshes confirm every button and overlay.
-- **Performance.** On Carrot with five units firing, the frame loop runs at about 650 frames per second uncapped
-  (about 1.5 ms per frame); effects add 2 draw calls to the board's 850 and confetti adds 1. GPU memory stays at 12
-  geometries and 31 textures across 5 restarts. Reduced effects keep it comfortable for motion-sensitive players.
-  Sound does not change the frame rate: in the same 8 s of Carrot with five units firing, runs averaged 612 and
-  631 fps muted and 616 and 625 fps with sound (uncapped). Of 241 sound requests, 97 played and the rest were
-  skipped by `minIntervalMs`. At most 2 voices sounded at once, the output peaked at 0.25 of full scale, and audio
-  used about 1.2 ms of main-thread time per second.
+- **Feedback clarity** (projectiles, block hits, capacity numbers, counter). In v2 a block simply vanished as a unit
+  passed its lane. Now each hit is a visible shot from one unit to one block, the block reacts when the shot lands,
+  and the unit's number ticks down with each shot. The "N/5" counter punches when it changes and flashes red at 0,
+  so the player sees what each unit did and how much room is left.
+- **Satisfaction** (muzzle pop, flash, squash, sparks, death pop, button squash). Every hit feels physical, a unit
+  that finishes its job pops instead of blinking out, and buttons give under the finger. A player whose system asks
+  for reduced motion gets 40% of the sparks and confetti and no shake, with nothing to set up.
+- **Reward moment** (confetti, reward flight, count-up, fanfare, coins). Confetti in the level's own colours bursts
+  over the win card with a short fanfare. The "+$X" then flies into the money, which counts up with a punch and
+  rising coin chirps. The payout becomes a moment instead of a number change.
+- **UI flow** (start screen, overlay animations, settings). The start screen gives the game a clear beginning:
+  nothing moves behind it, the Play click also turns sound on, and the HUD slides in with Level 1. Overshoot
+  entrances and a short stagger lead the eye from title to reward to button. Exits finish before the next level
+  loads, so nothing jumps, and a stray tap during a transition cannot launch a unit. Settings keeps only the option
+  players change, sound, while the effects level follows the system's reduced-motion setting.
+- **Consistency across levels** (fixed layout). Up to v2 the camera zoomed out on big levels. On a 375 x 812 phone,
+  Panda's and Carrot's reserve targets shrank to about 12 CSS px and their capacity digits to 5 or 6 px (see the v1
+  known limitations). Now only the board scales. The slots (37.5 px), reserve cells (28 px), units and capacity
+  digits (about 8 px) keep the same size on every level, and a unit keeps its size from the reserve to the track, so
+  what the player learns on Level 1 carries over to Carrot.
+- **Audio feedback** (sound effects). Every action and every hit has a short, soft sound. A tap confirms a button, a
+  whoosh a unit taking off. A pew marks the shot and a pop its impact, a tick the number dropping, and a thud a unit
+  parking. Two quiet beeps say the counter hit 0, and a rising swoosh announces the final rush. A busy board still
+  reads by ear. Breaks in a row rise in pitch, so a streak builds into a small crescendo, and the pew's small random
+  pitch keeps repeats from sounding mechanical. Board sounds stop with the pause and follow `debug.timeScale`, so
+  sound and picture stay in sync.
+- **Performance** (instancing, pools, allocation-free loops, voice cap and throttling). Measured on Carrot in a
+  desktop browser with the frame loop uncapped:
+  - **Five units firing:** a frame takes about 1.5 ms (about 650 frames per second). The board draws in about 850
+    calls; effects add 2.
+  - **Win card:** the 140 confetti pieces cost 1 draw call, and the loop stays above 2,600 frames per second.
+  - **Memory:** GPU memory stays at 12 geometries and 31 textures across 5 restarts.
+  - **Sound:** it does not change the frame rate. In the same 8 s with five units firing, runs averaged 612 and
+    631 fps muted, and 616 and 625 fps with sound. Of 241 sound requests, 97 played and the rest were skipped by
+    `minIntervalMs`. At most 2 voices sounded at once, the output peaked at 0.25 of full scale, and audio used about
+    1.2 ms of main-thread time per second.
 
 ### Exact values tuned
 
-Values are copied from `src/config/Config.js`; "—" means the key is new in v3.
+Values are copied from `src/config/Config.js` at v2-feel and now; "—" means the key is new in v3, and "removed" that
+v3 dropped it. The table lists every key v3 added or removed; v3 changed no existing value. `render.unitSize` and
+`render.launchLift` keep their values and are listed because their meaning changed.
 
 | Config key | v2 value | v3 value | Why |
 |---|---|---|---|
@@ -500,3 +584,31 @@ Values are copied from `src/config/Config.js`; "—" means the key is new in v3.
 | `debug.timeScale` | — | `1` | Slow motion for the simulation and effects. |
 | `debug.layoutColors` | — | `{ design: 0xffffff, boardRegion: 0x00e676, board: 0xffc400, slotsRegion: 0x00b0ff, reserveRegion: 0xff4081 }` | Outline colours. |
 | `debug.panel` | — | `{ right: 8, bottom: 8, padding: 6, font: '11px ui-monospace, monospace', color: '#ffffff', background: 'rgba(0, 0, 0, 0.65)' }` | Debug panel style, bottom right. |
+
+### Known limitations and deviations
+
+- **Resolved since v1.** Shots and returns are animated (v2 added the return glide, v3 the shots). There is sound, and
+  there is a start screen. The slots, reserve and labels keep one size on every level, which fixes v1's tiny phone
+  targets.
+- **Still true from v1 and v2.** Parked units can be relaunched, the default lose rule ends a level when all 5 slots
+  are blocked, and runners queue behind each other. Art fidelity is unchanged, and so is v2's pacing: Carrot takes
+  about 7.6 minutes played one unit at a time.
+- **No persistence or level select.** Money, progress and the Sound setting reset on reload. The start screen has only
+  Play; `?level=<id>` still plays any level on its own.
+- **No "fired" event.** Core has no `UNIT_FIRED`, so the shot, the muzzle pop and the pew start on `BLOCK_CONSUMED`,
+  in the step where the unit eats the block. The block itself waits for the shot to land.
+- **Refused clicks give no feedback.** A click at 0/5, or on a unit behind the front of its column, shows and plays
+  nothing; the presentation does not use `LAUNCH_REJECTED` yet.
+- **Units are larger than small board cells.** Runners are drawn at the constant unit size, 22.5 px long on a 375 px
+  phone, while Carrot's board cells are 11 px. Neighbouring runners can therefore overlap on the track, because the
+  1-cell follow distance is measured in board cells.
+- **Effects level.** Reduced effects come only from the system's reduced-motion setting; by request, there is no
+  in-game option.
+- **Performance was measured on a desktop browser** with the frame loop uncapped, not on a phone. The board still
+  uses one mesh per block and tile, about 850 draw calls on Carrot; instancing the board is the next step if low-end
+  phones struggle.
+- **Allocation-free covers the presentation code.** Core's `getSnapshot()` still builds a fresh snapshot every frame
+  by design, and the Renderer builds a short level-signature string each frame.
+- **Sound.** All 15 sounds are synthesised, and no audio files ship. During a pause, board sounds already playing
+  finish (the longest, the rush, lasts 0.7 s); only new ones wait. `debug.timeScale` is a config value, and the DOM
+  UI and its sounds keep real time.

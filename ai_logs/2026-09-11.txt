@@ -379,3 +379,45 @@ README: add these changes to the "v3 – Polish" section (what changed, why it i
 
 Report the sounds you created and their tuned values, and propose a commit message.
 
+=== 2026-09-11T07:23:23-05:00 | session 567fdf5c ===
+Task: audit and complete the v3 documentation so v3-polish can be closed. Don't change any game code; only README.md may change.
+
+1) Gather what v3 actually did:
+- The git log and diff since the v2-feel tag.
+- Config.js now vs. at v2-feel (git show v2-feel:src/config/Config.js).
+- /ai_logs and the current tests.
+
+2) Check that the "v3 – Polish" section covers every v3 change. Add anything missing and correct anything that doesn't match the code:
+- VFX architecture (VfxManager, VfxFactory, swappable projectile for future bubbles).
+- Projectile, muzzle pop, block flash and particle burst, unit death pop.
+- Capacity number animation.
+- Win confetti.
+- UI enter/exit animations, button squash, money fly and count-up, slots counter punch, settings panel animation, input blocked during overlays.
+- Optimization: instancing, pools and caps, zero allocations in the loop, debug perf panel, and the performance numbers measured on Carrot.
+- UI scaling fix: its cause (per-level frustum fit), the fixed design layout, board-only scaling and computeLayout.
+- Start screen and AppFlow.
+- Settings: effects toggle removed (auto-reduced with prefers-reduced-motion), sound toggle added.
+- SFX: AudioManager, SfxBank, procedural Web Audio sounds, the list of sounds, voice cap, throttling and combo pitch.
+- Any other fix or tuning found in the git log.
+
+3) The section must keep the 3 required subsections from the assignment:
+- What changed.
+- Why it improved feel: for each change, the player-facing benefit (feedback clarity, satisfaction, reward moment, UI flow, consistency across levels, audio feedback, performance).
+- Exact values tuned: one table with the columns Config key | v2 value | v3 value | Why, with every key changed or added in v3, "—" as the v2 value for new keys, and values copied exactly from Config.js.
+
+4) Check the whole README:
+- v1 and v2 sections are unchanged and still accurate.
+- How to run (npm install, npm run dev, npm test, npm run build) and controls include the start screen and the sound toggle.
+- A "How to compare" note lists the tags v1-primitive, v2-feel and v3-polish.
+- Known limitations are up to date.
+- /ai_logs has .txt files for the v3 prompts. If any are missing, list them; don't invent content.
+
+5) Verify: npm test and npm run build are green, and every Config key in the README tables exists in Config.js with the same value.
+
+Report:
+- what you added or corrected;
+- any missing ai_logs;
+- the verification results;
+- a proposed commit message and the exact commands to commit and create the v3-polish tag.
+Don't run the commit or tag commands yourself.
+
