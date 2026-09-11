@@ -8,6 +8,32 @@
  * Units of measure: distances are CELL UNITS (one grid cell = 1); durations are SECONDS, except keys ending in Ms
  * (milliseconds); speeds are cells per second. Easing keys hold a curve name from src/core/easing.js. Pixels/world units only appear in `render`.
  */
+
+/**
+ * The green pill button (Fish of Fortune): the start screen's Play button and every styled overlay button share this
+ * look, so both sections below read the same values (ui.startScreen.playButton, ui.overlays.button).
+ */
+const PILL_BUTTON = Object.freeze({
+  /** Label font size as a fraction of the button height; offsetY (em) centres the capitals on the pill. */
+  labelSize: 0.47,
+  labelOffsetY: -0.1,
+  labelColor: '#ffffff',
+  /** Outline stroke width in em (half of it shows outside the letters) and the soft drop shadow. */
+  outlineColor: '#1f5843',
+  outlineWidth: 0.17,
+  shadow: '0 0.09em 0.1em rgba(0, 0, 0, 0.45)',
+  /**
+   * The pill's own shadow on the art (CSS drop-shadow), replacing the baked one the processing removed. Lengths
+   * in em of the label size, so it scales with the button.
+   */
+  dropShadow: Object.freeze({ offsetY: 0.14, blur: 0.16, color: 'rgba(40, 26, 6, 0.5)' }),
+  hoverBrightness: 1.08,
+  /** Keyboard focus ring (px). */
+  focusColor: '#ffffff',
+  focusWidth: 3,
+  focusOffset: 2,
+});
+
 export const Config = Object.freeze({
   grid: Object.freeze({
     /** Matrix value that means "no block". */
@@ -497,7 +523,6 @@ export const Config = Object.freeze({
   ui: Object.freeze({
     text: Object.freeze({
       level: 'Level',
-      currency: '$',
       settings: 'Settings',
       paused: 'Paused',
       resume: 'Resume',
@@ -514,6 +539,12 @@ export const Config = Object.freeze({
       playAgain: 'Play again',
       lost: 'Out of space',
       retry: 'Retry',
+      /** Styled overlays (ui.overlays): titles and subtitles as drawn; the buttons use the labels above, in capitals. */
+      pauseTitle: 'PAUSED',
+      winTitle: 'VICTORY!',
+      winSubtitle: 'LEVEL CLEAR!',
+      loseTitle: 'DEFEAT!',
+      loseSubtitle: 'Out of Space!',
     }),
     colors: Object.freeze({
       text: '#ffffff',
@@ -608,32 +639,16 @@ export const Config = Object.freeze({
        * the same image cover-fitted, blurred (px) and darkened; scale hides the blur's soft edge. color shows first.
        */
       backdrop: Object.freeze({ blurPx: 18, brightness: 0.55, saturate: 1.1, scale: 1.1, color: '#0b2a3d' }),
+      /** The pill's look is PILL_BUTTON (shared with the overlay buttons). */
       playButton: Object.freeze({
         /** Anchored to the displayed art: centre and width are fractions of the image rect (over the sand). */
         centerX: 0.5,
         centerY: 0.875,
         widthPct: 0.46,
-        /** Label font size as a fraction of the button height; offsetY (em) centres the capitals on the pill. */
-        labelSize: 0.47,
-        labelOffsetY: -0.1,
-        labelColor: '#ffffff',
-        /** Outline stroke width in em (half of it shows outside the letters) and the soft drop shadow. */
-        outlineColor: '#1f5843',
-        outlineWidth: 0.17,
-        shadow: '0 0.09em 0.1em rgba(0, 0, 0, 0.45)',
-        /**
-         * The pill's own shadow on the art (CSS drop-shadow), replacing the baked one the processing removed. Lengths
-         * in em of the label size, so it scales with the button.
-         */
-        dropShadow: Object.freeze({ offsetY: 0.14, blur: 0.16, color: 'rgba(40, 26, 6, 0.5)' }),
-        hoverBrightness: 1.08,
+        ...PILL_BUTTON,
         /** Idle breathing: scale up to pulseScale and back once per pulsePeriodMs (off with reduced effects). */
         pulseScale: 1.04,
         pulsePeriodMs: 1600,
-        /** Keyboard focus ring (px). */
-        focusColor: '#ffffff',
-        focusWidth: 3,
-        focusOffset: 2,
       }),
     }),
     /**
@@ -678,6 +693,120 @@ export const Config = Object.freeze({
       focusColor: '#ffffff',
       focusWidth: 3,
       focusOffset: 2,
+      /** The settings button above the pause panel's backdrop: a static ring around it (CSS box-shadow). */
+      raisedRing: '0 0 0 3px rgba(255, 255, 255, 0.9), 0 0 14px 5px rgba(120, 200, 255, 0.75)',
+    }),
+    /**
+     * Styled overlays (Fish of Fortune): the settings (pause), win and lose panels of the Photoshop artboard mockups
+     * (assets/ui/source/overlays). The glass panel, the dim, every title and label are CSS; the big coin and the sad
+     * block are cut from the mockups by tools/ui (npm run process:ui), and the buttons are the Play button's pill
+     * (PILL_BUTTON). main.js loads the two images (decoded) with the button image and the font; if one fails, the console
+     * names it and the flat v3 cards (colors, sizes above) are used. Lengths are artboard px: the artboard's width maps
+     * onto the design frame's width and its centre onto the frame's centre (layout/computeOverlayLayout.js), so the
+     * overlays scale with the frame like the HUD. Items are placed by their centre (x, y); x defaults to the panel's.
+     */
+    overlays: Object.freeze({
+      coin: 'assets/ui/overlays/coin_big.png',
+      sadBlock: 'assets/ui/overlays/sad_block.png',
+      artboard: Object.freeze({ width: 800, height: 1280 }),
+      /** Dim over the game and the HUD, with no blur (no backdrop-filter); the raised HUD piece stays above it. */
+      backdrop: 'rgba(8, 18, 26, 0.64)',
+      panel: Object.freeze({
+        x: 136,
+        y: 315,
+        width: 528,
+        height: 656,
+        radius: 46,
+        /**
+         * The glass, without backdrop-filter: a translucent vertical gradient (a light top edge, then the body), a light
+         * outer line (border, rimWidth), a dark band inside it (rimDark, the same width) and a soft light band inside
+         * that (glow: an inset shadow glowWidth deep, glowBlur soft), and a glint on the top-left rim.
+         */
+        fill: 'linear-gradient(180deg, rgba(152, 182, 216, 0.94) 0%, rgba(140, 166, 199, 0.93) 3%, rgba(130, 152, 182, 0.91) 21%, rgba(128, 148, 178, 0.9) 100%)',
+        rimWidth: 4,
+        rimLight: '#86b3de',
+        rimDark: '#527ea9',
+        glow: 'rgba(160, 186, 218, 0.75)',
+        glowWidth: 5,
+        glowBlur: 12,
+        glint: Object.freeze({ x: 48, y: 9, width: 28, height: 7, color: 'rgba(255, 255, 255, 0.8)' }),
+      }),
+      /** Every button: the Play button's pill and label (PILL_BUTTON) this wide, in capitals, shrunk to fit labelMaxWidth. */
+      button: Object.freeze({ width: 350, labelMaxWidth: 0.78 }),
+      /**
+       * Titan One throughout. Font sizes are artboard px; outlines are the stroke width in em (half of it shows outside
+       * the letters); shadows are CSS text-shadows in em. capCenter: em from the top of a one-line text box (line-height
+       * 1) to the middle of the capitals (ascent 0.97, descent 0.175, cap height 0.71), so texts are placed by the middle
+       * of their capitals. A text wider than maxWidth x the panel shrinks to fit.
+       */
+      typography: Object.freeze({
+        capCenter: 0.5425,
+        maxWidth: 0.9,
+        /** Titles: a light-to-mid blue gradient (with a lighter band near the top of the capitals) over a thick dark outline. */
+        title: Object.freeze({
+          size: 93,
+          fill: 'linear-gradient(180deg, #d4effd 19%, #f0fbff 27%, #c3e4fb 36%, #62a9ea 90%)',
+          outlineColor: '#183e7c',
+          outlineWidth: 0.15,
+          shadow: '0 0.06em 0.05em rgba(0, 20, 50, 0.55)',
+        }),
+        subtitle: Object.freeze({ size: 41, color: '#d4dcfe', outlineColor: '#3a4668', outlineWidth: 0.1, shadow: '0 0.05em 0.05em rgba(0, 20, 50, 0.35)' }),
+        /** The reward "+X", on the win card and flying to the HUD coin (the only reward style). */
+        reward: Object.freeze({ size: 37, color: '#ffeca0', outlineColor: '#7a420c', outlineWidth: 0.18, shadow: '0 0.06em 0.06em rgba(40, 20, 0, 0.5)' }),
+      }),
+      titleY: 398,
+      subtitleY: 488,
+      /** Settings: three buttons of button.width, their centres this far down the artboard (the same gap between them). */
+      pause: Object.freeze({ buttonsY: Object.freeze([590, 718, 846]) }),
+      /**
+       * Win: the big coin (image width), the reward under it, the button. The coin pops in, then bobs (off with reduced
+       * effects). The coin is 7 % smaller than in the mockup and the button 6 px lower, so the reward the mockup has no
+       * room for fits between them with even gaps.
+       */
+      win: Object.freeze({
+        coin: Object.freeze({ x: 398, y: 650, width: 214 }),
+        rewardY: 784,
+        buttonY: 870,
+        bobPx: 6,
+        bobPeriodMs: 2400,
+        popFromScale: 0.3,
+      }),
+      /**
+       * Lose: the sad block (image width) in a glass bubble (CSS: radial-gradient body, an outer glow and two highlight
+       * arcs, as fractions of its size), small floating bubbles around it ([dx, dy, radius] in bubble radii, light or
+       * dark), the button. The bubble and block float gently (off with reduced effects).
+       */
+      lose: Object.freeze({
+        bubble: Object.freeze({
+          x: 401,
+          y: 660,
+          size: 218,
+          fill: 'radial-gradient(circle closest-side, rgba(170, 214, 255, 0.59) 0%, rgba(165, 210, 252, 0.47) 60%, rgba(175, 218, 255, 0.43) 86%, rgba(200, 232, 255, 0.67) 93%, rgba(228, 245, 255, 0.92) 97%, rgba(228, 245, 255, 0) 100%)',
+          glow: 'rgba(150, 205, 255, 0.35)',
+          glowBlur: 18,
+          arcs: Object.freeze([
+            Object.freeze({ inset: 0.1, width: 0.028, angle: -47, color: 'rgba(255, 255, 255, 0.82)' }),
+            Object.freeze({ inset: 0.1, width: 0.022, angle: 132, color: 'rgba(255, 255, 255, 0.55)' }),
+          ]),
+        }),
+        block: Object.freeze({ x: 400, y: 660, width: 166 }),
+        floating: Object.freeze([
+          Object.freeze([-1.33, -0.51, 0.13, 'light']),
+          Object.freeze([-1.16, -0.34, 0.04, 'light']),
+          Object.freeze([1.26, -0.43, 0.1, 'light']),
+          Object.freeze([-1.04, -0.92, 0.08, 'dark']),
+          Object.freeze([1.11, -0.87, 0.2, 'light']),
+          Object.freeze([-1.21, 0.73, 0.19, 'dark']),
+          Object.freeze([1.05, 0.86, 0.13, 'dark']),
+        ]),
+        smallFill: Object.freeze({
+          light: 'radial-gradient(circle closest-side, rgba(180, 215, 250, 0.16) 0%, rgba(190, 225, 255, 0.24) 70%, rgba(220, 240, 255, 0.75) 88%, rgba(220, 240, 255, 0) 100%)',
+          dark: 'radial-gradient(circle closest-side, rgba(40, 48, 58, 0.78) 0%, rgba(60, 70, 82, 0.82) 75%, rgba(150, 165, 185, 0.78) 90%, rgba(150, 165, 185, 0) 100%)',
+        }),
+        buttonY: 864,
+        floatPx: 5,
+        floatPeriodMs: 2600,
+      }),
     }),
   }),
 
@@ -690,6 +819,10 @@ export const Config = Object.freeze({
      * renderer.info.memory in a small panel.
      */
     enabled: false,
+    /** ?debug (any value but 0 / false) shows the debug panel in any build, for profiling the production bundle. */
+    panelParam: 'debug',
+    /** Frames the panel's frame statistics cover (avg, p95): 240 = the last 4 s at 60 fps. */
+    frameWindow: 240,
     /** Scales the time fed to the simulation and the effects (1 = real time; 0.25 = slow motion). The DOM UI is unaffected. */
     timeScale: 1,
     /** Outline colours (drawn on top of everything). */

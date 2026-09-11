@@ -17,8 +17,12 @@ const USED_STATES = new Set([UnitState.LAUNCHING, UnitState.RUNNING, UnitState.E
 /** States in which a styled unit plays its swim animation (idle otherwise). */
 const MOVING_STATES = new Set([UnitState.LAUNCHING, UnitState.RUNNING, UnitState.EATING]);
 const TONE_MAPPING = { agx: THREE.AgXToneMapping, aces: THREE.ACESFilmicToneMapping, neutral: THREE.NeutralToneMapping, none: THREE.NoToneMapping };
-/** Numeric key of a grid cell (no string per lookup). */
-const cellKey = (row, col) => row * 1024 + col;
+// Scratch for the block instances (no allocation per grid change).
+const _m = new THREE.Matrix4();
+const _p = new THREE.Vector3();
+const _q = new THREE.Quaternion();
+const _s = new THREE.Vector3();
+const HIDDEN = new THREE.Matrix4().makeScale(0, 0, 0);
 /** Reserve shift order within a column (a module function, so sorting creates no closure per frame). */
 const byTarget = (a, b) => a.target - b.target;
 const clearList = (list) => {
@@ -29,7 +33,8 @@ const clearList = (list) => {
  * The Three.js bridge. Reads snapshots, owns the scene graph, never mutates game state.
  *
  *   sync(snapshot)  -- structure: static layer (track guide, slots, reserve tiles, camera) rebuilt when the
- *                      level's shape changes, blocks diffed on grid.version, slot tints on inventory.version,
+ *                      level's shape changes, blocks (one InstancedMesh per colour) rewritten on grid.version, slot
+ *                      tints on inventory.version,
  *                      units re-posed every frame (flight curve, entry queue, return glide, reserve shift, turning)
  *   bindEvents(bus) -- effects only: end-of-level tint, and the VfxManager (projectiles, block hits, sparks)
  *
@@ -57,8 +62,16 @@ const clearList = (list) => {
  * exists along the track (Config.track.launchSpacing).
  */
 export class Renderer {
-  /** @type {Map<number, THREE.Mesh>} key cellKey(row, col); the VfxManager takes a block's mesh when it is eaten */
-  #blockMeshes = new Map();
+  /**
+   * The blocks: one InstancedMesh per colour id (factory.blocks), refilled from the grid on every grid version. Per
+   * grid cell (row * cols + col) the colour drawn there (0 = none) and its instance index, for takeBlockMesh.
+   * @type {Map<number, THREE.InstancedMesh>}
+   */
+  #blockSets = new Map();
+  #blockCounts = new Map();
+  #cellColor = new Int32Array(0);
+  #cellInstance = new Int32Array(0);
+  #gridCols = 0;
   /** @type {Map<string, THREE.Group>} key unit id; group.userData.label is the capacity sprite */
   #unitMeshes = new Map();
   /** @type {THREE.Mesh[]} index = slot index */
@@ -107,7 +120,6 @@ export class Renderer {
   #pickList = [];
   #backs = new Map();
   #backsScratch = [];
-  #liveCells = new Set();
   #trackPoint = { x: 0, y: 0, facing: 'N' };
   #slotPoint = { x: 0, y: 0 };
   #resColumns = new Map();
@@ -128,6 +140,8 @@ export class Renderer {
   #reserveVisible = new Set();
   #reserveEntering = new Set();
   #reserveColumns = null;
+  /** Colours whose fade materials were compiled for this level (#warmFade). */
+  #fadeWarm = new Set();
   /** Size factor of a unit on the track (factory.trackScale: a styled fish fits the canal) and the label floor. */
   #trackScale = 1;
   #labelMinRatio = 0;
@@ -226,6 +240,33 @@ export class Renderer {
       light.layers.set(this.#modelLayer);
       this.scene.add(light);
     }
+    this.#balanceLightCounts();
+  }
+
+  /**
+   * Give both passes the same number of lights of each kind (ambient lights do not count). When the counts differ,
+   * three.js's lights state changes version at every pass, and each lit material re-derives its program (a parameters
+   * object and a cache-key string) twice a frame: about half the per-frame garbage. The missing ones are added on the
+   * other layer with intensity 0, which adds exactly nothing to the image.
+   */
+  #balanceLightCounts() {
+    const layers = [0, this.#modelLayer];
+    for (const Kind of [THREE.DirectionalLight, THREE.HemisphereLight, THREE.PointLight, THREE.SpotLight]) {
+      const counts = layers.map((layer) => {
+        let n = 0;
+        this.scene.traverse((object) => {
+          if (object instanceof Kind && object.layers.isEnabled(layer)) n += 1;
+        });
+        return n;
+      });
+      const fewer = counts[0] < counts[1] ? 0 : 1;
+      for (let i = counts[fewer]; i < counts[1 - fewer]; i += 1) {
+        const light = new Kind();
+        light.intensity = 0;
+        light.layers.set(layers[fewer]);
+        this.scene.add(light);
+      }
+    }
   }
 
   /**
@@ -314,39 +355,76 @@ export class Renderer {
     return this.#layout;
   }
 
-  /** Diff block meshes against the grid state: add missing / recoloured cells, remove emptied ones. */
+  /**
+   * Draw the grid state: every block of a colour is an instance of that colour's InstancedMesh (one draw call per
+   * colour instead of one per block), all rewritten from the grid on each grid version, so emptied cells drop out and
+   * a restart brings them back. A block the effects took (takeBlockMesh) is already empty in the grid.
+   */
   buildGridFromState(gridState) {
     const empty = this.config.grid.emptyValue;
-    const { cellSize } = this.#layout;
+    const { cellSize, boardOrigin } = this.#layout;
     const half = (this.config.render.blockHeight * cellSize) / 2;
-    const live = this.#liveCells;
-    live.clear();
     const { cells } = gridState;
-    for (let r = 0; r < cells.length; r += 1) {
-      const row = cells[r];
-      for (let c = 0; c < row.length; c += 1) {
-        const value = row[c];
-        if (value === empty) continue;
-        const key = cellKey(r, c);
-        live.add(key);
-        const existing = this.#blockMeshes.get(key);
-        if (existing && existing.userData.color === value) continue;
-        if (existing) this.#levelRoot.remove(existing);
-        const mesh = this.factory.block(value, r, c);
-        mesh.userData.color = value;
-        mesh.scale.setScalar(cellSize);
-        this.boardToWorld(c + 0.5, r + 0.5, half, mesh.position);
-        this.#levelRoot.add(mesh);
-        this.#blockMeshes.set(key, mesh);
+    const rows = cells.length;
+    const cols = rows > 0 ? cells[0].length : 0;
+    if (this.#cellColor.length !== rows * cols) {
+      this.#cellColor = new Int32Array(rows * cols);
+      this.#cellInstance = new Int32Array(rows * cols);
+    }
+    this.#gridCols = cols;
+    const counts = this.#blockCounts;
+    counts.clear();
+    for (let r = 0; r < rows; r += 1) {
+      for (let c = 0; c < cols; c += 1) {
+        const value = cells[r][c];
+        if (value !== empty) counts.set(value, (counts.get(value) || 0) + 1);
       }
     }
-    this.#blockMeshes.forEach(this.#pruneBlock);
+    counts.forEach(this.#fitBlockSet);
+    this.#blockSets.forEach(this.#emptyBlockSet);
+    _q.identity();
+    _s.setScalar(cellSize);
+    for (let r = 0; r < rows; r += 1) {
+      for (let c = 0; c < cols; c += 1) {
+        const value = cells[r][c];
+        const cell = r * cols + c;
+        if (value === empty) {
+          this.#cellColor[cell] = 0;
+          continue;
+        }
+        const set = this.#blockSets.get(value);
+        _p.set(boardOrigin.x + (c + 0.5) * cellSize, half, boardOrigin.y + (r + 0.5) * cellSize);
+        set.setMatrixAt(set.count, _m.compose(_p, _q, _s));
+        this.#cellColor[cell] = value;
+        this.#cellInstance[cell] = set.count;
+        set.count += 1;
+      }
+    }
+    this.#blockSets.forEach(this.#flagBlockSet);
   }
 
-  #pruneBlock = (mesh, key) => {
-    if (this.#liveCells.has(key)) return;
-    this.#levelRoot.remove(mesh);
-    this.#blockMeshes.delete(key);
+  // Bound once, like #pruneUnit: Map.forEach with these allocates nothing.
+  /** A colour's InstancedMesh with room for `count` blocks (replaced by a bigger one when it has less). */
+  #fitBlockSet = (count, color) => {
+    const set = this.#blockSets.get(color);
+    if (set && set.instanceMatrix.count >= count) return;
+    if (set) {
+      this.#levelRoot.remove(set);
+      set.dispose();
+    }
+    const fresh = this.factory.blocks(color, count);
+    this.#levelRoot.add(fresh);
+    this.#blockSets.set(color, fresh);
+    this.#warmBlock(color);
+  };
+
+  #emptyBlockSet = (set) => {
+    set.count = 0;
+  };
+
+  #flagBlockSet = (set) => {
+    set.visible = set.count > 0; // no empty draw call for a colour that is gone
+    set.instanceMatrix.needsUpdate = true;
   };
 
   /**
@@ -597,10 +675,11 @@ export class Renderer {
         });
         this.#levelRoot.add(group);
         this.#unitMeshes.set(unit.id, group);
+        if (!this.#fadeWarm.has(unit.color)) this.#warmFade(group, unit.color);
       }
       group.visible = true;
       group.userData.juice.deathAt = -1;
-      group.userData.pickAs = this.#pickTarget(unit, frontOnly);
+      group.userData.pickAs = this.#pickTarget(group.userData, unit, frontOnly);
       if (group.userData.pickAs) pickables.push(group);
       if (!group.userData.pose) group.userData.pose = newPose();
       const pose = this.#unitPose(unit, now, backs, group.userData.pose);
@@ -631,12 +710,24 @@ export class Renderer {
 
   // ---- VfxManager host: what the effects may borrow (never game state) ----
 
-  /** Hand the block mesh at (row, col) over to the effects; the grid diff will no longer see or remove it. */
+  /**
+   * Hand the block at (row, col) over to the effects as a mesh of its own (factory.block, where its instance was),
+   * which they flash, squash and remove; its instance is hidden at once and dropped by the next grid rebuild.
+   */
   takeBlockMesh(row, col) {
-    const key = cellKey(row, col);
-    const mesh = this.#blockMeshes.get(key);
-    if (!mesh) return null;
-    this.#blockMeshes.delete(key);
+    const cell = row * this.#gridCols + col;
+    const color = cell < this.#cellColor.length ? this.#cellColor[cell] : 0;
+    if (!(color > 0)) return null;
+    this.#cellColor[cell] = 0;
+    const set = this.#blockSets.get(color);
+    set.setMatrixAt(this.#cellInstance[cell], HIDDEN);
+    set.instanceMatrix.needsUpdate = true;
+    const { cellSize } = this.#layout;
+    const mesh = this.factory.block(color, row, col);
+    mesh.userData.color = color;
+    mesh.scale.setScalar(cellSize);
+    this.boardToWorld(col + 0.5, row + 0.5, (this.config.render.blockHeight * cellSize) / 2, mesh.position);
+    this.#levelRoot.add(mesh);
     return mesh;
   }
 
@@ -701,6 +792,7 @@ export class Renderer {
       triangles: info ? info.render.triangles : 0,
       geometries: info ? info.memory.geometries : 0,
       textures: info ? info.memory.textures : 0,
+      programs: info && info.programs ? info.programs.length : 0,
       projectiles: vfx.projectiles,
       particles: vfx.particles,
       blocks: vfx.blocks,
@@ -777,10 +869,20 @@ export class Renderer {
     group.scale.set(sx * size, sy * size, sz * size);
   }
 
-  /** Raycast target for a unit: front reserve units launch, parked units relaunch from their slot, others none. */
-  #pickTarget(unit, frontOnly) {
-    if (unit.state === UnitState.RESERVE && (!frontOnly || unit.reservePos.row === 0)) return { kind: 'unit', id: unit.id };
-    if (unit.state === UnitState.RETURNED && unit.slotIndex !== null) return { kind: 'slot', id: unit.slotIndex };
+  /**
+   * Raycast target for a unit: front reserve units launch, parked units relaunch from their slot, others none. The
+   * target objects live on the unit's userData and are reused every frame (pick() hands them out at click time).
+   */
+  #pickTarget(data, unit, frontOnly) {
+    if (unit.state === UnitState.RESERVE && (!frontOnly || unit.reservePos.row === 0)) {
+      if (!data.pickUnit) data.pickUnit = { kind: 'unit', id: unit.id };
+      return data.pickUnit;
+    }
+    if (unit.state === UnitState.RETURNED && unit.slotIndex !== null) {
+      if (!data.pickSlot) data.pickSlot = { kind: 'slot', id: unit.slotIndex };
+      data.pickSlot.id = unit.slotIndex;
+      return data.pickSlot;
+    }
     return null;
   }
 
@@ -970,7 +1072,50 @@ export class Renderer {
     return reservePoint(this.#layout, col, row);
   }
 
+  /**
+   * Compile the transparent materials a unit's fade borrows (the unit entering the last visible reserve row) before
+   * the first fade needs them, once per colour and level, under the pass that draws the mesh (model layer and tone
+   * mapping for the GLB fish). The factory keeps them in its pool afterwards, so their programs stay alive; without
+   * this the first fade compiled them mid-game (a ~60 ms frame).
+   */
+  #warmFade(group, color) {
+    this.#fadeWarm.add(color);
+    if (!this.gl) return;
+    this.factory.setUnitOpacity(group, 0.5);
+    for (const { mesh } of group.userData.fade || []) this.#precompile(mesh);
+    this.factory.setUnitOpacity(group, 1);
+  }
+
+  /**
+   * Compile what a block handed to the effects draws with (takeBlockMesh: a mesh of its own, then the effects' flash
+   * material), when a colour's instances are created: the instanced blocks use another program, so the first block
+   * eaten compiled it mid-game.
+   */
+  #warmBlock(color) {
+    if (!this.gl) return;
+    const mesh = this.factory.block(color, 0, 0);
+    this.#precompile(mesh);
+    mesh.material = this.vfxFactory.flashMaterial();
+    this.#precompile(mesh);
+  }
+
+  /** Compile an object's materials under the pass that draws it (see render()), drawing nothing. */
+  #precompile(object) {
+    const { gl, camera, scene } = this;
+    const mask = camera.layers.mask;
+    const toneMapping = gl.toneMapping;
+    if (this.#modelPass) {
+      const model = object.layers.isEnabled(this.#modelLayer);
+      camera.layers.set(model ? this.#modelLayer : 0);
+      gl.toneMapping = model ? this.#modelToneMapping : THREE.NoToneMapping;
+    }
+    gl.compile(object, camera, scene);
+    camera.layers.mask = mask;
+    gl.toneMapping = toneMapping;
+  }
+
   #removeUnit(id, group) {
+    this.factory.setUnitOpacity(group, 1); // a fade still running hands its materials back to the pool
     this.factory.disposeLabel(group.userData.label);
     this.factory.disposeLabel(group.userData.labelSpare);
     if (group.userData.animator) group.userData.animator.dispose();
@@ -1067,10 +1212,12 @@ export class Renderer {
   /** Dispose level meshes (blocks, units, slots, tiles) but keep gl/camera for the next level. */
   clear() {
     for (const group of this.#unitMeshes.values()) {
+      this.factory.setUnitOpacity(group, 1);
       this.factory.disposeLabel(group.userData.label);
       this.factory.disposeLabel(group.userData.labelSpare);
       if (group.userData.animator) group.userData.animator.dispose();
     }
+    this.#fadeWarm.clear();
     // Styled track: its InstancedMeshes' instance buffers (the GLB geometry and materials stay cached).
     if (this.#trackGroup && this.#trackGroup.userData.dispose) this.#trackGroup.userData.dispose();
     if (this.#slotCounter) this.factory.disposeLabel(this.#slotCounter);
@@ -1083,7 +1230,10 @@ export class Renderer {
     if (this.#debugGroup) this.#debugGroup.children.forEach((line) => line.geometry.dispose());
     this.#debugGroup = null;
     if (this.#levelRoot) this.#levelRoot.clear();
-    this.#blockMeshes.clear();
+    for (const set of this.#blockSets.values()) set.dispose(); // instance buffers; geometry and material stay cached
+    this.#blockSets.clear();
+    this.#cellColor = new Int32Array(0);
+    this.#cellInstance = new Int32Array(0);
     this.#unitMeshes.clear();
     this.#slotMeshes = [];
     this.#pickables = [];

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { FreeLists } from './anim/FreeLists.js';
 
 const LAY_FLAT = -Math.PI / 2;
 /** thetaStart that centres an odd-sided cone base on the heading axis (symmetric footprint from above). */
@@ -23,6 +24,8 @@ export class PrimitiveFactory {
     this.layout = config.render.layout;
     /** Shared geometries/materials keyed by descriptor, disposed in dispose(). */
     this._cache = new Map();
+    /** Transparent copies for unit fades, per shared material (see setUnitOpacity), disposed in dispose(). */
+    this._fades = new FreeLists();
     this.setStyle({});
   }
 
@@ -69,12 +72,27 @@ export class PrimitiveFactory {
     return this.#cached(`tile:${edge}`, () => new THREE.PlaneGeometry(edge, edge).rotateX(LAY_FLAT));
   }
 
+  #blockGeometry() {
+    const { gap, blockHeight } = this.render;
+    return this.#cached('block', () => new THREE.BoxGeometry(1 - gap, blockHeight, 1 - gap));
+  }
+
   /** A grid block for a 1 x 1 cell: BoxGeometry(1 - gap, blockHeight, 1 - gap) x palette[color]; scale it by cellSize. */
   block(color, row, col) {
-    const { gap, blockHeight } = this.render;
-    const geometry = this.#cached('block', () => new THREE.BoxGeometry(1 - gap, blockHeight, 1 - gap));
-    const mesh = new THREE.Mesh(geometry, this.#lit(this.#hex(color)));
+    const mesh = new THREE.Mesh(this.#blockGeometry(), this.#lit(this.#hex(color)));
     mesh.userData = { kind: 'block', id: `${row},${col}` };
+    return mesh;
+  }
+
+  /**
+   * Every block of one colour in one draw call: block()'s geometry and material as an InstancedMesh with room for
+   * `capacity` blocks and count 0; the Renderer writes each block's matrix and the count. Its instance buffers are the
+   * caller's to release (InstancedMesh.dispose(); the geometry and material stay cached).
+   */
+  blocks(color, capacity) {
+    const mesh = new THREE.InstancedMesh(this.#blockGeometry(), this.#lit(this.#hex(color)), capacity);
+    mesh.count = 0;
+    mesh.frustumCulled = false; // the board is always in view; its bounds would change with every block eaten
     return mesh;
   }
 
@@ -144,7 +162,10 @@ export class PrimitiveFactory {
 
   /**
    * Fade a unit's meshes (not its labels) to `opacity`. Their materials are shared per colour, so below 1 each mesh
-   * gets its own transparent copy (fadeCopy); back at 1 the shared one returns and the copy is released.
+   * borrows a transparent copy (fadeCopy) from a pool kept per shared material; back at 1 the shared one returns and
+   * the copy goes back to the pool. Copies are disposed only with the factory: three.js destroys a shader program
+   * with the last material using it, so disposing the copy after each fade made the next fade compile the transparent
+   * program again mid-game (a ~60 ms frame). The Renderer compiles the copies when a level loads (#warmFade).
    */
   setUnitOpacity(group, opacity) {
     const ud = group.userData;
@@ -153,17 +174,21 @@ export class PrimitiveFactory {
         ud.fade = [];
         group.traverse((object) => {
           if (!object.isMesh || !object.visible) return;
-          const copy = this.fadeCopy(object.material, ud.color);
-          copy.transparent = true;
-          ud.fade.push({ mesh: object, shared: object.material, copy });
+          const shared = object.material;
+          const copy = this._fades.take(shared, () => {
+            const made = this.fadeCopy(shared, ud.color);
+            made.transparent = true;
+            return made;
+          });
+          ud.fade.push({ mesh: object, shared, copy });
           object.material = copy;
         });
       }
-      for (const { copy } of ud.fade) copy.opacity = opacity;
+      for (let i = 0; i < ud.fade.length; i += 1) ud.fade[i].copy.opacity = opacity;
     } else if (ud.fade) {
       for (const { mesh, shared, copy } of ud.fade) {
         mesh.material = shared;
-        copy.dispose();
+        this._fades.give(shared, copy);
       }
       ud.fade = null;
     }
@@ -279,9 +304,10 @@ export class PrimitiveFactory {
     sprite.material.dispose();
   }
 
-  /** Dispose every cached geometry/material. */
+  /** Dispose every cached geometry/material and every fade copy. */
   dispose() {
     for (const resource of this._cache.values()) resource.dispose();
     this._cache.clear();
+    this._fades.clear((material) => material.dispose());
   }
 }

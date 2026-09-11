@@ -7,16 +7,20 @@ import { AppFlow } from './app/AppFlow.js';
 import { CueBus } from './app/Cues.js';
 import { pickDebugLevel } from './debug/levelParam.js';
 import { DebugPanel, layoutDebugEntries, statsDebugEntries } from './debug/DebugPanel.js';
+import { FrameStats } from './debug/FrameStats.js';
+import { RuntimeProbe } from './debug/RuntimeProbe.js';
+import { hasDebugParam } from './debug/debugParam.js';
 import { Renderer } from './render/Renderer.js';
+import { RenderGate } from './render/RenderGate.js';
 import { StyledFactory } from './render/StyledFactory.js';
 import { AssetLoader } from './render/assets/AssetLoader.js';
-import { VfxFactory } from './render/vfx/VfxFactory.js';
 import { ConfettiLayer } from './render/vfx/ConfettiLayer.js';
 import { AudioManager } from './audio/AudioManager.js';
 import { InputManager } from './input/InputManager.js';
 import { UIManager } from './ui/UIManager.js';
 import { loadStartScreenArt, loadUiFont } from './ui/startScreenArt.js';
 import { loadHudArt } from './ui/hudArt.js';
+import { loadOverlayArt } from './ui/overlayArt.js';
 import { GameBackground } from './ui/GameBackground.js';
 import { EffectsPreference, EffectsMode } from './ui/EffectsPreference.js';
 import { SoundPreference } from './ui/SoundPreference.js';
@@ -51,21 +55,22 @@ const levelColors = (levelId) => {
 
 // Fish of Fortune look: every asset is loaded once before the start screen appears (no loading screen). A file that
 // fails logs an error naming it and its part keeps the v3 look: a model or the slot texture its primitive, the start
-// screen or the HUD their flat v3 versions, the background art the flat level colours. The label font (Titan One) is
-// loaded once for the start screen, the HUD and the capacity numbers.
+// screen, the HUD or the overlays their flat v3 versions, the background art the flat level colours. The label font
+// (Titan One) is loaded once for the start screen, the HUD, the overlays and the capacity numbers.
 const assets = new AssetLoader();
 const font = loadUiFont(config.ui.startScreen.font);
-const [, , startArt, hudArt, backgroundImage] = await Promise.all([
+const [, , startArt, hudArt, overlayArt, backgroundImage] = await Promise.all([
   assets.preload(StyledFactory.assetUrls(config)),
   Promise.all(StyledFactory.textureUrls(config).map((url) => assets.loadTexture(url))),
   loadStartScreenArt(config.ui.startScreen, assets, { font }),
   loadHudArt(config.ui.hud, assets, { font, fontUrl: config.ui.startScreen.font.url }),
+  loadOverlayArt(config.ui, assets, { font }),
   assets.loadImage(config.render.backgroundArt.url),
 ]);
 if (!backgroundImage) console.error(`Background: could not load "${config.render.backgroundArt.url}"; using the flat level colours instead`);
 const background = backgroundImage ? new GameBackground({ root: bgRoot, config: config.render.backgroundArt, image: backgroundImage }) : null;
 const renderer = new Renderer({ canvas, config, cues, factory: new StyledFactory(config, assets) });
-const confetti = new ConfettiLayer({ canvas: fxCanvas, config, factory: new VfxFactory(config) });
+const confetti = new ConfettiLayer({ canvas: fxCanvas, config });
 const audio = new AudioManager({ config, eventBus, cues });
 const input = new InputManager({ canvas, renderer, gameManager: game });
 const ui = new UIManager({
@@ -79,6 +84,7 @@ const ui = new UIManager({
   cues,
   startArt,
   hudArt,
+  overlayArt,
   hooks: {
     onWinShown: () => confetti.burst(levelColors(game.getSnapshot().levelId)),
     onResultClosed: () => confetti.stop(),
@@ -92,7 +98,10 @@ if (background) background.mount();
 // Keep the board below the HUD: the styled HUD is a band in design units, the flat v3 bar a fixed pixel height.
 if (hudArt) renderer.setHudBand(config.ui.hud.band);
 else renderer.setViewportInsets({ top: config.ui.sizes.barHeight });
+// Render on demand: the scene is synced and drawn only when it can change (see the frame loop).
+const gate = new RenderGate();
 const resize = () => {
+  gate.invalidate();
   renderer.resize(window.innerWidth, window.innerHeight);
   confetti.resize(window.innerWidth, window.innerHeight);
   // The DOM layers follow where the Renderer put the design.
@@ -114,9 +123,19 @@ const unbinds = [
 input.attach();
 ui.mount();
 ui.resize(renderer.screenFrame());
-// Config.debug.enabled: layout outlines (Renderer) and a panel with cellSize, FPS, draw calls, particles, memory, voices.
-const debugPanel = config.debug.enabled ? new DebugPanel({ root: uiRoot, config }) : null;
-if (debugPanel) debugPanel.mount();
+// Config.debug.enabled: layout outlines (Renderer) and the debug panel; ?debug (Config.debug.panelParam) shows the panel
+// in any build, e.g. to profile the production bundle. The panel lists frame times (avg, p95) split into simulation,
+// render and UI, draw calls, GPU memory, particles, tweens, voices, heap and long tasks; window.blockChompersDebug gives
+// benchmark scripts the same objects.
+const debugOn = config.debug.enabled || hasDebugParam(window.location.search, config.debug.panelParam);
+const debugPanel = debugOn ? new DebugPanel({ root: uiRoot, config }) : null;
+const frameStats = debugOn ? new FrameStats(config.debug.frameWindow) : null;
+const probe = debugOn ? new RuntimeProbe() : null;
+if (debugPanel) {
+  debugPanel.mount();
+  probe.start();
+  window.blockChompersDebug = { game, flow, renderer, ui, confetti, audio, frameStats, probe };
+}
 
 if (config.debug.logEvents) {
   for (const type of Object.values(Events)) {
@@ -125,37 +144,45 @@ if (config.debug.logEvents) {
 }
 
 // Fixed-step logic driven by real time x debug.timeScale, only while the flow is PLAYING; rendering and effects read
-// the snapshot every frame.
+// the snapshot every frame, except while the scene is still: paused (the presentation clock is frozen) or behind the
+// opaque styled start screen. Then RenderGate skips the scene's sync and draw until what it shows changes; the UI
+// still updates every frame.
 let running = true;
 let last = performance.now();
-const fps = { frames: 0, since: last, value: 0 };
+let panelAt = last;
 const maxFrameMs = config.timing.maxFrameDt * 1000;
 
 function frame(now) {
   if (!running) return;
-  const realMs = Math.min(Math.max(0, now - last), maxFrameMs);
+  const intervalMs = now - last;
+  const realMs = Math.min(Math.max(0, intervalMs), maxFrameMs);
   last = now;
   const scaledMs = realMs * config.debug.timeScale;
 
+  const t0 = frameStats ? performance.now() : 0;
   flow.update(scaledMs / 1000);
   const snapshot = game.getSnapshot();
+  const t1 = frameStats ? performance.now() : 0;
   // Units are clickable only in a running, unpaused level with no overlay animating; modals also block the pointer.
   input.setEnabled(flow.playing && snapshot.phase === GamePhase.PLAYING && !snapshot.paused && !ui.isAnimating());
-  renderer.sync(snapshot, scaledMs);
+  const draw = gate.shouldDraw(snapshot.paused || ui.coversScene(), snapshot);
+  if (draw) renderer.sync(snapshot, scaledMs);
+  const t2 = frameStats ? performance.now() : 0;
   ui.update(snapshot, realMs);
-  renderer.render();
+  const t3 = frameStats ? performance.now() : 0;
+  if (draw) renderer.render();
   confetti.update(scaledMs);
 
-  if (debugPanel) {
+  if (frameStats) {
+    const t4 = performance.now();
+    frameStats.record(intervalMs, t1 - t0, t2 - t1 + (t4 - t3), t3 - t2);
+    probe.sample(now);
     // Twice a second, so the debug readout itself adds no per-frame work or allocations.
-    fps.frames += 1;
-    if (now - fps.since >= 500) {
-      fps.value = (fps.frames * 1000) / (now - fps.since);
-      fps.frames = 0;
-      fps.since = now;
+    if (now - panelAt >= 500) {
+      panelAt = now;
       debugPanel.update([
         ...layoutDebugEntries(renderer.getLayout(), snapshot),
-        ...statsDebugEntries(fps.value, renderer.getStats(), confetti.stats(), audio.stats()),
+        ...statsDebugEntries({ frame: frameStats.summary(), stats: renderer.getStats(), confetti: confetti.stats(), audio: audio.stats(), ui: ui.stats(), probe: probe.stats() }),
       ]);
     }
   }
@@ -174,6 +201,7 @@ if (import.meta.hot) {
     input.detach();
     ui.unmount();
     if (debugPanel) debugPanel.unmount();
+    if (probe) probe.stop();
     audio.dispose();
     confetti.dispose();
     if (background) background.unmount();

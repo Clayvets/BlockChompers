@@ -676,3 +676,157 @@ Decisions. Proceed with Stage 2.
 
 3) Background width: raise it to 1170 px so 3x phones aren't upscaled. Keep webp quality ~85 and report the final file size.
 
+=== 2026-09-11T12:12:45-05:00 | session 567fdf5c ===
+Task: Fish of Fortune styled version, 2D step 3 + performance.
+Part A: find and fix the lag.
+Part B: integrate the pause (settings), win and lose overlays, matching the mockups.
+Do Part A's fixes before adding the overlays, so measurements stay clean.
+
+SCOPE (strict):
+- In scope: performance fixes anywhere in the presentation layer, plus the settings/pause panel, the win overlay and the lose overlay.
+- Out of scope: the start screen art, the HUD art and layout, the board, fish and track art, the VFX and SFX design, and gameplay rules. Performance fixes must not visibly change any of them.
+- src/core, the level files and the core tests must not change. Follow the existing config structure (ui.*, render.*), put every new value in config, and don't add npm dependencies without asking.
+
+SOURCES (asset constraint):
+- I can't provide separate exports with transparent backgrounds. The only sources are the files already in assets/ui/source/ (button_green.jfif, gameplay_bg.jfif, hud_sheet.png, unchanged and not merged) and 3 mockups in assets/ui/source/overlays/, each 800×1280:
+  - mockup_pause.png: "PAUSED", RESUME, RESTART LEVEL;
+  - mockup_defeat.png: "DEFEAT!", "Out of Space!", a sad blue block inside a bubble, RETRY;
+  - mockup_victory.png: "VICTORY!", "LEVEL CLEAR!", a big gold star coin, CONTINUE.
+- In all 3, a rounded translucent glass panel sits centered over the dimmed game.
+- Never modify the sources and never ask me for separate exports. Get every asset with tools/ui/process_ui.py ("process:ui").
+
+========================================
+STAGE 1 – Profile + extract assets, then STOP for my approval
+========================================
+
+A1) Measure before changing anything:
+- Test on the production build (npm run build, then npm run preview), not the dev server. Report whether the lag also happens in dev only.
+- Extend the debug panel (debug.enabled) with: FPS, frame time avg and p95, time split into simulation / render / UI-DOM, draw calls, triangles, geometries, textures, programs, active particles, active tweens and audio voices.
+- Benchmark scenarios, at 390×844 with devicePixelRatio 2:
+  - start screen idle;
+  - Level 1 with 5 fish moving;
+  - Carrot with 5 fish firing plus block bursts;
+  - the win confetti.
+  If possible, also run them with 4x CPU throttling in Chrome DevTools.
+- Record long tasks (>50 ms), GC spikes and memory after 5 restarts.
+
+A2) Audit these likely causes and report which ones are real, with numbers:
+- Renderer: uncapped pixel ratio, antialias cost, shadows enabled, rendering every frame while paused or in the menu.
+- Draw calls: blocks, empty tiles, slots or reserve cells as individual meshes instead of InstancedMesh; one material per object instead of shared.
+- Fish: one AnimationMixer or skinned clone per fish updating when hidden or idle; one shader program compiled per palette color; hidden reserve fish still updating.
+- Labels: CanvasTexture capacity labels regenerated or re-uploaded more often than when the number changes.
+- VFX: instance buffers updated when nothing is active; per-frame allocations.
+- DOM/CSS: filter: blur() applied live on the blurred background copy; drop-shadow filters or box-shadows on animated elements; backdrop-filter; animating properties other than transform and opacity; layout reads inside the rAF loop; text updated every frame.
+- Input: raycasting on every pointermove.
+- Audio: nodes that are never disconnected.
+- Loop: simulation catch-up spirals when frames are slow (check timing.maxStepsPerFrame).
+
+B1) Extract overlay assets from the mockups:
+- Big coin and sad block: they sit on the glass panel. Sample the panel color around each element, remove it with a soft color key, and feather the edges so there's no blue-grey fringe.
+- The bubble around the sad block: estimate alpha by unmixing against the sampled panel color. If it looks dirty, extract only the block and rebuild the bubble in CSS (radial gradient circle, light rim, highlight, small floating bubbles).
+- Rebuild in CSS, don't extract: the glass panel, backdrop dimming, titles, subtitles and every text label. Never cut text or a panel with the game baked behind it. The glass panel must not use backdrop-filter (use gradients, a light border and an inner highlight instead).
+- Keep reusing the existing cutouts (button_green.png, HUD pieces, settings button, coin icon).
+- Quality: trim to content with a few px of padding, remove stray pixels, apply no color shift. Upscale with Lanczos only when needed, never above 2x, followed by a light unsharp mask. Report each asset's source size and scale.
+- Previews: each asset over dark, light and checkerboard backgrounds, and each rebuilt overlay next to its mockup, into tools/ui/preview_overlays.png.
+
+Stage 1 report:
+- the baseline numbers table;
+- the confirmed causes, ranked by impact;
+- the fix plan with the expected gain for each;
+- the asset previews and the approach used per asset.
+Then STOP.
+
+========================================
+STAGE 2 – Fix performance, then integrate overlays
+========================================
+
+PART A – Performance (fix only the confirmed causes, one at a time, re-measuring after each):
+- Targets on the production build at 390×844 with devicePixelRatio 2:
+  - stable 60 FPS on Carrot with 5 fish firing and on the win confetti;
+  - frame time p95 under 16.7 ms;
+  - no long tasks during play;
+  - memory stable after 5 restarts.
+- Typical fixes, applied only where measured:
+  - cap pixel ratio at render.maxPixelRatio (2);
+  - no shadows;
+  - render on demand while paused or in the menu;
+  - InstancedMesh for blocks and tiles;
+  - shared materials, and one shared tint program with the color passed as a uniform or instance attribute;
+  - update mixers only for visible moving fish, and freeze hidden reserve fish;
+  - update labels only on change;
+  - skip VFX buffer updates when nothing is active;
+  - pre-render the blurred background once into a static image or canvas instead of a live CSS blur;
+  - replace animated filters and shadows with static layers;
+  - no layout reads in the loop;
+  - throttle raycasts to pointerdown;
+  - zero allocations per frame.
+- No visual regression: compare before and after screenshots of Level 1 and Carrot.
+
+PART B – Overlays:
+1) Structure: three separate DOM containers on one shared base.
+   - OverlayBase: backdrop, glass panel, enter and exit animations, input blocking.
+   - SettingsPanel (pause), WinOverlay and LoseOverlay are independent containers with their own markup. The settings panel stays a separate container, never merged with win or lose.
+   - Only one is visible at a time, and settings can't open during win or lose.
+   - Pure controller src/ui/overlays/OverlayController.js (no DOM): states NONE, PAUSE, WIN and LOSE; allowed transitions; a busy flag while animating. UIManager only renders it and maps buttons to GameManager commands.
+2) Typography, consistent everywhere, Titan One only:
+   - Titles ("PAUSED", "DEFEAT!", "VICTORY!"): light-to-mid blue vertical gradient fill, thick dark blue outline, soft shadow.
+   - Subtitles ("Out of Space!", "LEVEL CLEAR!"): smaller, pale lavender-white fill with a subtle dark outline.
+   - Button labels: exactly the Play button style (white, dark green outline, soft shadow), uppercase. Even where the mockups show a different font, all buttons share this style.
+   - Strings in ui.text; sizes, colors and outlines in ui.overlays.typography. Text shrinks to fit its button.
+   - Use static text-shadow or stroke layers, not animated filters.
+3) Buttons: reuse button_green.png and the Play button component.
+   - Real <button> elements: squash on pointerdown, bounce on release, hover brighten, :focus-visible ring, Enter and Space activation, and the existing tap SFX.
+   - Disabled while their overlay animates, so double taps fire once. The action runs after the exit animation.
+4) Settings / pause:
+   - Opened by the HUD settings button. It truly freezes the simulation, fish animations and VFX, and the scene renders on demand while paused.
+   - Buttons: RESUME, RESTART LEVEL, and the existing sound toggle as a third button of the same style ("SOUND: ON" / "SOUND: OFF") in the empty space below.
+   - The settings button stays above the backdrop and highlighted. Pressing it again or pressing Escape resumes. Tapping the backdrop does nothing.
+5) Lose: on LEVEL_LOST (both reasons), show "DEFEAT!", "Out of Space!", the sad block with a gentle idle float, and RETRY, which restarts the same level. Keep the v3 soft entrance and small title shake.
+6) Win: on LEVEL_WON, show "VICTORY!", "LEVEL CLEAR!", the big coin with a pop-in and a slow shine or bob, the reward as "+X" under the coin, and CONTINUE.
+   - After Level 3 the button reads "PLAY AGAIN" and returns to Level 1.
+   - Confetti stays visible above the panel without a second WebGL context; if it needs a layer above the DOM, use a lightweight 2D canvas with the same pool and cap.
+   - The "+X" fly starts at the big coin and lands on the HUD coin icon, then the count-up plays.
+   - Coins everywhere, with no "$" sign.
+7) HUD during overlays: the backdrop dims the game and the HUD. During win and lose, the coin bar stays above the backdrop so the count-up is visible.
+8) Layout and loading: the panel size and position are relative to the design frame (ui.overlays.panel), identical on every level and viewport. Preload and decode the new images in main.js with the other assets, with a console error and the flat v3 overlay as fallback.
+
+Tests (node, no DOM, no Three.js):
+- OverlayController: valid transitions; settings blocked during WIN or LOSE; no action while busy; RESUME, RESTART, RETRY, CONTINUE and PLAY AGAIN map to the right commands; PLAY AGAIN appears only after the last level.
+- Unit tests for any new pure performance helper (for example the raycast throttle or the render-on-demand flag).
+- no-render-imports.test.js, all core tests and the build stay green.
+
+Final check (production build, 390×844, 768×1024, 1920×1080):
+- the benchmark scenarios re-run, including each overlay open, with a before/after table against Stage 1;
+- each overlay compared side by side with its mockup (screenshots);
+- every button works with mouse, touch and keyboard;
+- pause truly freezes the game;
+- the win flow updates the coins and loads the next level;
+- the lose flow restarts the level;
+- fonts and button styles are identical across the overlays and the start screen.
+
+README, "Styled – Fish of Fortune" section:
+- a "Performance" subsection with the causes found, the fixes, and the before/after table;
+- the overlay structure and typography rules;
+- the asset approach: extracted from Photoshop artboard mockups with process_ui.py, and which elements were extracted vs. rebuilt in CSS;
+- the new config keys.
+Ask me for the illustration credits; don't guess them.
+
+Report: the before/after performance table, the fixes applied, the asset approach per element, the comparison screenshots, and a proposed commit message.
+
+=== 2026-09-11T13:16:03-05:00 | session 567fdf5c ===
+Go. Start Part A, fix 1. Decisions:
+
+1) Pause layout: approved at 590 / 718 / 846 mockup px. Keep the same button width and gap for all three, and check that SOUND sits fully inside the panel with the same bottom margin as the mockup's spacing. Put the positions in ui.overlays.pause so they can be tuned.
+
+2) "+X" reward: approved as gold fill with a brown outline, as a named 4th style, ui.overlays.typography.reward.
+- It's the only reward style: reuse it for the "+X" on the win card and for the "+X" that flies to the HUD coin icon, so there are no other variants.
+- Keep the coin moved up 7 px, and check that the coin, "+X" and CONTINUE don't feel cramped at 390×844.
+
+3) Known differences: accepted, with one small addition.
+- Backdrop: dim only, no blur. No backdrop-filter and no canvas snapshot, for performance.
+- Titles: no inner bevel. You may add a lighter band near the top of the existing gradient to suggest the bevel, only if it's a plain gradient stop with no filters and no extra layers.
+- Subtitles: the thinner outline is approved.
+List all three under "Known differences from the mockups" in the README.
+
+4) Credits: in the README, credit the three mockups and the coin and sad-block art cut from them as: "Illustrations AI-generated with Gemini; UI mockups composed in Photoshop by Ana". Use the same credit line for the start screen art, the gameplay background and the HUD sheet if they aren't credited yet, so every 2D asset has a consistent credit.
+

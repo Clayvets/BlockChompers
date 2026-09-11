@@ -620,11 +620,12 @@ The Fish of Fortune look arrives in steps:
 - **2D step 1:** the key art, with its painted title, and an image Play button replace the flat start screen.
 - **2D step 2:** a painted gameplay background, the HUD from the HUD sheet and glass slot tiles. The reserve shows only
   3 rows, which leaves room for bigger fish with a smaller capacity number.
+- **2D step 3:** the settings (pause), win and lose overlays from three Photoshop mockups, and a performance pass that
+  removed the lag (see Performance).
 
-Everything else is exactly as in v3: the settings, win and lose overlays, the "N/5" counter, blocks, empty ring and
-reserve tiles, effects and sound. `src/core`, the level files and their tests are unchanged, and so are `VfxFactory`
-and `SfxBank`; the capacity rules are untouched (only the number's size changed). `AppFlow` still goes from MENU to
-PLAYING, with Play loading Level 1.
+Everything else is exactly as in v3: the "N/5" counter, blocks, empty ring and reserve tiles, effects and sound.
+`src/core`, the level files and their tests are unchanged, and so is `SfxBank`; the capacity rules are untouched (only
+the number's size changed). `AppFlow` still goes from MENU to PLAYING, with Play loading Level 1.
 
 ### 3D asset pipeline
 
@@ -694,7 +695,7 @@ animations, bounding box and size. `tools/blender/inspect_blend.py` inventories 
 ### 2D asset pipeline (start screen)
 
 **Source.** Two images, committed in `assets/ui/source/` so the processing can be rerun. The script only reads them.
-The start screen art and the button were AI-generated with Gemini.
+Credits: see Credits below.
 
 | File | Contents |
 |---|---|
@@ -754,8 +755,7 @@ self-hosted, so the game runs offline and loads no CDN.
 
 ### 2D asset pipeline (gameplay background, HUD, slots)
 
-**Source.** Two more images in `assets/ui/source/`, only read by the script. The gameplay background was
-AI-generated with Gemini.
+**Source.** Two more images in `assets/ui/source/`, only read by the script. Credits: see Credits below.
 
 | File | Contents |
 |---|---|
@@ -799,6 +799,64 @@ pixels they are drawn at (settings 45 CSS px, bars 37 px tall, coin 46 px), the 
 background 1.5x.
 At devicePixelRatio 3 the bars get close to 1:1 (1.3x). A 3x export from Figma would sharpen the sheet's edges and
 provide the real level bar.
+
+### 2D asset pipeline (overlays)
+
+**Source.** Three Photoshop artboard mockups in `assets/ui/source/overlays/`, 800 x 1280 PNG (defeat and victory are
+801 px wide), only read by the script. Each shows a translucent glass panel centred over the dimmed game:
+
+| File | Contents |
+|---|---|
+| `mockup_pause.png` | "PAUSED", RESUME, RESTART LEVEL |
+| `mockup_defeat.png` | "DEFEAT!", "Out of Space!", a sad blue block inside a bubble, RETRY |
+| `mockup_victory.png` | "VICTORY!", "LEVEL CLEAR!", a big star coin, CONTINUE |
+
+There are no separate exports with transparency: everything comes from these three files and the cutouts above.
+
+**Extracted or rebuilt.**
+
+| Element | Approach |
+|---|---|
+| Big star coin | Extracted from `mockup_victory.png` |
+| Sad block | Extracted from `mockup_defeat.png` |
+| Bubble around the block, small floating bubbles | Rebuilt in CSS (the extraction attempt was dirty, see below) |
+| Glass panel, backdrop dim | CSS: gradients, a border and inset shadows; no `backdrop-filter`, and no panel cut with the game behind it |
+| Titles, subtitles, button labels, "+X" | CSS text in Titan One; no text is cut from the mockups |
+| Buttons | `button_green.png`, the Play button |
+| HUD pieces, settings button, HUD coin | The HUD cutouts above |
+
+**Extraction.** `npm run process:ui -- --only overlays` (settings in `tools/ui/ui_assets.json`, `overlays`). The coin
+and the block sit on the panel (the block on its bubble), so each is lifted off that surface:
+1. **Surface.** A linear colour gradient fitted to the pixels around the element; the fit is robust, so shadows,
+   highlights and other art are dropped as outliers. It is fitted first on the crop's border, then on a ring 3 to 8 px
+   outside the keyed element. Coin: (115, 138, 167), median residual 3.2; block (inside the bubble's glow): (127, 172,
+   208), residual 12.9.
+2. **Key.** Pixels farther than `keyThreshold` from that surface (coin 70, block 85); the largest region, holes filled.
+3. **Shape.** The coin is an ellipse fitted to its keyed outline (110.7 x 112.1 px), so its soft shadow below stays
+   out. The block is the convex hull of its keyed pixels, so the droplets on its edge and its glossy top edge stay
+   whole and opaque.
+4. **Soft key and feather.** Pixels one pixel inside the shape keep their colour at full alpha. At the edge, alpha is
+   each pixel's unmix against the fitted surface, along the line to the element's own outline colour (grown outward
+   from inside), capped by the shape; the colour there is that grown outline colour, so no blue-grey fringe remains.
+   Then a 0.7 px Gaussian feather, and alpha under 6 is cleared.
+5. **Trim and scale.** Trimmed to content plus 4 px, then scaled up 1.5x with Lanczos (premultiplied alpha) and a light
+   unsharp mask on the colour only (radius 1.2, 60%, threshold 2). At devicePixelRatio 2 the artboard maps to about
+   780 device px on a 390 px phone (about 1:1); 1.5x covers 3x phones and desktop at 2x without going above 2x.
+
+**The bubble.** The script also tries to lift the bubble itself off the panel: each pixel's alpha is its projection
+between the panel colour and the bubble's light tint, after the block's area is filled in from around it
+(`tools/ui/bubble_unmixed.png`, not shipped). The result is dirty: the fill leaves X-shaped seams where the block was,
+the glow behind the block is lost, and the interior alpha is noisy (median 0.17). So the bubble is CSS: a
+radial-gradient body with a light rim, a static outer glow, two highlight arcs and seven small light or dark bubbles.
+
+**Output**
+
+| File | Size | Contents |
+|---|---|---|
+| `public/assets/ui/overlays/coin_big.png` | 147.8 KB | 348 x 352 (source 232 x 235 px with padding, x1.5) |
+| `public/assets/ui/overlays/sad_block.png` | 86.3 KB | 249 x 225 (source 166 x 150 px with padding, x1.5) |
+| `tools/ui/preview_overlays.png` | 1.3 MB | Every asset over dark, light and a checkerboard with 4x edge crops, and each overlay (a Pillow stand-in for the CSS) next to its mockup |
+| `tools/ui/bubble_unmixed.png` | 32.7 KB | The bubble extraction attempt |
 
 ### In the game
 
@@ -888,8 +946,8 @@ provide the real level bar.
     panel.
   - The bars are static containers with no fill or progress: only their text changes. It is white Titan One with a dark
     outline, like the Play button, and it shrinks to fit its box when the amount grows.
-  - The v3 animations stay: the HUD slides in, the level label swaps, and the money counts up with a punch. The "+$X"
-    reward now lands on the coin icon.
+  - The v3 animations stay: the HUD slides in, the level label swaps, and the coins count up with a punch. The "+X"
+    reward lands on the coin icon. Coins show no "$" anywhere.
 - **Slots.** The glass tile is a textured plane `layout.slotSize` wide (transparent, sRGB). The texture is shared, with
   one material per status: free is untinted, blocked is tinted red. Parking, the "N/5" counter and the slot tints work as
   before.
@@ -900,7 +958,7 @@ provide the real level bar.
     ones. It runs only when the inventory changes.
   - When a column moves up, its units glide with the v3 easing and stagger. The unit reaching row 3 comes from half a
     cell below and fades in over `reserveEnterMs`, using opacity and position only (no stencil or clipping). While it
-    fades, its fish uses a private copy of its tinted material.
+    fades, its fish borrows a transparent copy of its tinted material from a pool (see Performance).
 - **Bigger fish, smaller numbers.**
   - A unit is `layout.unitSize` (1.0) long in the reserve and in a slot, the same on every level.
   - On the track a fish still fits its one-cell canal: it shrinks to `trackScale()` along its launch flight and grows
@@ -922,6 +980,152 @@ provide the real level bar.
 | Board cell: Level 1 / Panda / Carrot | 0.46 / 0.383 / 0.293 | 0.46 / 0.383 / 0.335 (the two wide boards are limited by the width) |
 | Capacity number | `labelSize` 0.45 (sprite) | `labelFontScale` 0.45 x fish width (digits), `labelMinHeight` 0.2 |
 | "N/5" counter | (8.3, 13.4), 0.55 high | (8.85, 15.05), 0.6 high |
+
+**Overlays (2D step 3).** Settings (pause), win and lose, rebuilt from the mockups.
+- **Structure** (`src/ui/overlays/`):
+  - The pure `OverlayController` decides and holds no DOM. It has the states NONE, PAUSE, WIN and LOSE, the allowed
+    transitions, a busy flag while an overlay enters or leaves, and the command each press sends. `UIManager` only
+    renders it and sends the commands to `GameManager`.
+  - `OverlayBase` is the styled base: the dim over the game and the HUD (it takes every tap under it and does nothing
+    with them), the glass panel, the layout from the design frame, the enter and exit animations, buttons disabled
+    while it animates, and the idle loops.
+  - `SettingsPanel`, `WinOverlay` and `LoseOverlay` each build their own markup in their own container. Only one is
+    shown at a time, and settings cannot open during a result.
+  - `FlatOverlay` is the v3 cards with the same interface: the fallback. `UiKit` holds the shared DOM helpers.
+- **Layout.** The mockups' 800 x 1280 artboard maps onto the design frame: its width onto the frame's width, its centre
+  onto the frame's centre (the pure `src/ui/layout/computeOverlayLayout.js`). Every length in `ui.overlays` is artboard
+  px, so the overlays scale with the frame like the HUD. The panel is 257 x 320 CSS px on a 390 x 844 phone, 316 x 393
+  on 768 x 1024 and 333 x 414 on 1920 x 1080.
+- **Glass.** No `backdrop-filter`. The panel is a translucent vertical gradient with a light top edge, a light outer
+  line (border), a dark band and a soft light band inside it (static inset box-shadows), and a glint. The dim is a
+  flat translucent colour.
+- **Typography.** Titan One only. Strings live in `ui.text`; sizes, colours and outlines in `ui.overlays.typography`.
+  - **Titles:** a light-to-mid blue vertical gradient, with a lighter band near the top of the capitals, over a thick
+    dark-blue outline and a soft shadow. The outline and shadow are a static text layer under the gradient letters
+    (`background-clip: text`), so half the stroke is hidden and the letters keep their weight.
+  - **Subtitles:** smaller, a pale lavender-white fill with a thin dark outline (stroke behind the letters, `paint-order`).
+  - **Button labels:** exactly the Play button's (the shared `PILL_BUTTON` values and the same CSS rules), in capitals.
+  - **Reward "+X":** a gold fill with a brown outline (`typography.reward`). It is the only reward style: the "+X" on
+    the win card and the one that flies to the HUD coin.
+  - Every text shrinks to fit: titles and subtitles to 90% of the panel, labels to 78% of their button. The effects
+    are static text-shadows and strokes; no filter is animated.
+- **Buttons.**
+  - Real `<button>`s with `button_green.png` and the Play button's CSS rules (the same selectors).
+  - The v3 squash and bounce on pointer and on Enter / Space, hover brighten, a `:focus-visible` ring and the tap sound.
+  - Disabled while their overlay animates (without dimming). A closing button's command runs after the exit animation.
+- **Pause.**
+  - The HUD settings button opens it and sends `pause` at once. The simulation, the fish animations and the effects
+    freeze, and the scene is drawn only when it changes (render on demand, see Performance).
+  - Buttons: RESUME, RESTART LEVEL, and SOUND: ON / OFF (the toggle keeps the panel open). They are centred at 590 /
+    718 / 846 artboard px (`ui.overlays.pause.buttonsY`), with one width and one gap.
+  - The settings button stays above the dim with a static ring. Pressing it again, or Escape, resumes. A tap on the dim
+    does nothing.
+- **Lose.** "DEFEAT!", "Out of Space!", and the sad block in the CSS bubble with small bubbles around it, floating
+  gently. RETRY restarts the level. It keeps the v3 soft entrance and the small title shake.
+- **Win.**
+  - "VICTORY!", "LEVEL CLEAR!", the big coin (pops in, then bobs), "+X" under it, and CONTINUE. After the last level
+    the button reads PLAY AGAIN and returns to Level 1.
+  - On CONTINUE the "+X" flies from the big coin to the HUD coin, then the count-up plays.
+  - The confetti rains above the panel on a 2D canvas (no second WebGL context).
+- **HUD during overlays.** The dim covers the game and the HUD, except the coin bar during a win or a loss and the
+  settings button during the pause. The bar's slide-in drops its transform once it lands, so a raised piece can sit
+  above the dim.
+- **Loading.** `src/ui/overlayArt.js` loads and decodes the coin, the sad block and the pill (shared with the start
+  screen) with the font, in `main.js`'s asset batch. If one fails, the console names it and the flat v3 cards are used.
+
+### Performance
+
+**How it was measured.**
+- **Setup:** the production build (`npm run build`, then `npm run preview`) at 390 x 844 and devicePixelRatio 2, in
+  the in-app browser.
+- **Debug panel.** `?debug` (`debug.panelParam`) shows it in any build. It reports:
+  - FPS, and the frame interval avg / p95 / max;
+  - work per frame avg / p95, split into simulation, render and UI;
+  - draw calls, triangles, GPU memory and shader programs;
+  - particles, tweens and animations, audio voices;
+  - heap and allocation rate, long tasks.
+- **Scripts and tools:** `window.blockChompersDebug` gives benchmark scripts the same objects. GPU time came from
+  `EXT_disjoint_timer_query_webgl2`, and the stalls from Long Animation Frames with script attribution.
+- **Reading p95:** frame intervals snap to the 60 Hz refresh, so their p95 sits at one refresh (16.8 ms). The target
+  was read as work p95 under 16.7 ms, frame max under 33 ms and no long task during play.
+- **Limits:** 4x CPU throttling is not available in the in-app browser, so every number is at 1x.
+- **Not dev-only:** the lag also happened on the dev server (4.5 to 6.2 ms of work, the same stalls).
+
+**Causes found**, by impact:
+1. **Shader recompiles (the lag).** A unit entering reserve row 3 faded in with a transparent copy of its tinted
+   material, disposed when the fade ended. three.js destroys a shader program with the last material using it, so the
+   next fade compiled the transparent program again. That meant render frames of 61 to 65 ms, long tasks up to 69 ms,
+   and programs going from 11 to 13 during play.
+2. **One mesh per block.** 674 draw calls on Carrot, render about 2.8 of 3.3 ms per frame, and three.js bookkeeping of
+   about 0.3 KB per draw call per frame.
+3. **Program re-derivation every pass.** The model pass (hemisphere and directional light) and the v3 pass (ambient and
+   directional) had different light counts. So three.js's lights state changed version twice a frame, and every lit
+   material rebuilt its program parameters and cache-key string, only to find the same program: about half the
+   per-frame garbage.
+4. **Drawing when nothing changes.** Behind the opaque start screen (242 calls, 1.84 ms, 7.5 MB/s) and while paused
+   (1.46 ms, 7 MB/s).
+5. **Smaller:** pick targets allocated every frame, and the confetti on a second WebGL context.
+
+**Measured, and not a cause:**
+- Pixel ratio is already capped at 2 (GPU 1.27 ms at 1x against 1.29 ms at 2x), and there are no shadows.
+- Raycasts run only on pointerdown, audio voices are all released, and the loop's catch-up is bounded (at most 6
+  steps).
+- Labels are redrawn only on change, and idle effects upload nothing.
+- The static CSS blur: 30 extra blurred layers gave 58.4 against 59.2 fps.
+- Fish mixers: 0.17 to 0.21 ms per frame for about 17 fish. Hidden reserve fish were already frozen, and freezing the
+  visible idle fish would change the art, so they are unchanged.
+
+**Fixes**, one at a time, each re-measured:
+1. **Fade pool.** `PrimitiveFactory.setUnitOpacity` borrows a transparent copy per shared material from a pool
+   (`src/render/anim/FreeLists.js`) and gives it back; copies are disposed only with the factory.
+   - For each colour, when a level loads, the Renderer compiles those copies with `WebGLRenderer.compile`, under the
+     pass that draws them.
+   - It also compiles what a block handed to the effects draws with (its own mesh, then the flash material), because
+     the instanced blocks use another program.
+   - All 14 programs exist from boot, and none compiles during play.
+2. **Instanced blocks.** One `InstancedMesh` per colour (`PrimitiveFactory.blocks`), rewritten from the grid on each
+   grid version. `takeBlockMesh` hides the cell's instance and hands the effects a mesh of its own in the same place, so
+   `VfxManager` is unchanged. The before/after screenshots are pixel-identical on the blocks.
+3. **Balanced light counts.** Each missing kind of light is added to the other pass with intensity 0 (here, a
+   hemisphere light in the v3 pass). The pixels are identical, and three.js keeps one lights state.
+4. **Render on demand.** The pure `src/render/RenderGate.js`: while the game is paused or the styled start screen hides
+   the scene, `main.js` syncs and draws the scene only when what it shows changes (level, grid, inventory, phase, pause)
+   or after a resize. The UI still updates every frame. The flat v3 start screen lets the level show, so it keeps
+   drawing.
+5. **Pick targets** are reused per unit.
+6. **Confetti** is on a 2D canvas with the same pool and cap. Each piece is its 3D-turned rectangle projected with one
+   `setTransform`, so it flips as before.
+
+**Before and after** (production build, 390 x 844, devicePixelRatio 2):
+
+| Scenario | | FPS | Frame max | Work avg (p95) | Render | Draw calls | Programs | Allocation | Long tasks |
+|---|---|---|---|---|---|---|---|---|---|
+| Start screen idle | before | 59.95 | 16.8 ms | 1.88 ms (2.3) | 1.84 ms | 242 | 11 | 7.5 MB/s | 0 |
+| | after | 59.95 | 16.8 ms | 0.03 ms (0.1) | not drawn | 0 | 14 | 0.3 MB/s | 0 |
+| Level 1, 5 fish moving | before | 58.25 | 66.7 ms | 3.0 ms (2.9) | 2.89 ms | 243 | 11 to 13 | 14.9 MB/s | 3 (max 69 ms) |
+| | after | 59.95 | 16.8 ms | 1.08 to 1.38 ms (1.5 to 1.9) | 1.0 to 1.3 ms | 76 to 80 | 14 | 2.5 to 3.8 MB/s | 0 |
+| Carrot, 5 fish firing | before | 59.95 | 16.8 ms | 3.37 ms (4.4) | 3.28 ms | 674 | 11 | 12.0 MB/s | 0 after warm-up |
+| | after | 59.95 | 16.8 ms | 1.41 to 1.44 ms (1.9) | 1.35 ms | 71 to 83 | 14 | 4.3 to 4.9 MB/s | 0 |
+| Win confetti (140) | before | 59.95 | 16.8 ms | 0.85 ms (1.1) | 0.79 ms | 26 + a second context | 11 | 5.2 MB/s | 0 |
+| | after | 59.95 | 16.8 ms | 0.54 ms (0.7) | 0.51 ms | 26 | 14 | 1.7 MB/s | 0 |
+| Paused | before | | | 1.46 ms | | | | 7 MB/s | |
+| | after | 59.95 | 16.8 ms | 0.04 ms (0.1) | not drawn | 0 | 14 | 0.5 MB/s | 0 |
+
+With each overlay open (after; the v3 lose card was not measured before):
+
+| Viewport | Pause | Win (140 confetti) | Lose | Carrot, 5 fish firing |
+|---|---|---|---|---|
+| 390 x 844, 2x | 0.04 ms, 0.5 MB/s | 0.50 ms, 1.2 MB/s | 0.77 ms, 2.0 MB/s | 1.41 to 1.44 ms, 4.3 to 4.9 MB/s |
+| 768 x 1024, 1x | 0.04 ms, 0.6 MB/s | 0.54 ms, 1.6 MB/s | 1.14 ms, 3.4 MB/s | 1.39 ms, 4.6 MB/s |
+| 1920 x 1080, 1x | 0.05 ms, 0.6 MB/s | 0.62 ms, 1.7 MB/s | 1.18 ms, 3.4 MB/s | 1.48 ms, 4.3 MB/s |
+
+Every row ran at 59.95 fps with a frame max of 16.8 to 17.1 ms and no long task.
+- **Boot:** one long task of about 200 ms while the page loads, behind the start screen (182 ms before). It covers
+  module start, the first render and the shader compiles, which now include the fade and block-effect programs.
+- **Memory:** geometries (15), textures (42), programs (14) and the fade pool (6 copies) are unchanged across 5
+  restarts. The JS heap stays at 46.4 to 46.9 MB after each one, and idles at 41 MB on the start screen.
+- **Garbage collection:** on Carrot the heap now drops about 6 MB roughly every 1.2 s. No frame went over 16.8 ms, so
+  no collection shows as a stutter.
 
 ### New config keys
 
@@ -978,6 +1182,26 @@ Gameplay background, HUD, slots and layout (2D step 2; the layout values changed
 | `ui.hud.dropShadow` | `{ offsetY: 0.05, blur: 0.08, color: 'rgba(0, 20, 40, 0.45)' }` | Soft shadow under the HUD pieces, in design units. |
 | `ui.hud.focusColor` / `focusWidth` / `focusOffset` | `'#ffffff'` / `3` / `2` | The settings button's focus ring (px). |
 
+Overlays and performance (2D step 3; lengths in `ui.overlays` are artboard px):
+
+| Config key | Value | Why |
+|---|---|---|
+| `PILL_BUTTON` (module constant) | the Play button's `labelSize`, `labelOffsetY`, `labelColor`, `outlineColor`, `outlineWidth`, `shadow`, `dropShadow`, `hoverBrightness`, `focus*` | One source for the Play button and every overlay button, so they cannot drift apart; `ui.startScreen.playButton` spreads it. |
+| `ui.text.pauseTitle` / `winTitle` / `winSubtitle` / `loseTitle` / `loseSubtitle` | `'PAUSED'` / `'VICTORY!'` / `'LEVEL CLEAR!'` / `'DEFEAT!'` / `'Out of Space!'` | The styled overlays' titles as drawn; their buttons reuse `resume`, `restartLevel`, `soundOn` / `soundOff`, `continue`, `playAgain` and `retry` in capitals. |
+| `ui.text.currency` | removed | Coins everywhere, no "$". |
+| `ui.hud.raisedRing` | `'0 0 0 3px rgba(255, 255, 255, 0.9), 0 0 14px 5px rgba(120, 200, 255, 0.75)'` | The static ring on the settings button while it sits above the pause panel's dim. |
+| `ui.overlays.coin` / `sadBlock` | `'assets/ui/overlays/coin_big.png'` / `'assets/ui/overlays/sad_block.png'` | The two cutouts. |
+| `ui.overlays.artboard` | `{ width: 800, height: 1280 }` | The mockups' artboard, mapped onto the design frame. |
+| `ui.overlays.backdrop` | `'rgba(8, 18, 26, 0.64)'` | The dim over the game and the HUD, with no blur. |
+| `ui.overlays.panel` | `{ x: 136, y: 315, width: 528, height: 656, radius: 46, fill: <gradient>, rimWidth: 4, rimLight: '#86b3de', rimDark: '#527ea9', glow: 'rgba(160, 186, 218, 0.75)', glowWidth: 5, glowBlur: 12, glint: { x: 48, y: 9, width: 28, height: 7, color: 'rgba(255, 255, 255, 0.8)' } }` | The mockups' panel rect and its glass, measured from the mockups: light outer line, dark band, soft inner light, top edge, glint. |
+| `ui.overlays.button` | `{ width: 350, labelMaxWidth: 0.78 }` | The mockups' button width; long labels shrink to 78% of it. |
+| `ui.overlays.typography` | `{ capCenter: 0.5425, maxWidth: 0.9, title: { size: 93, fill: <gradient>, outlineColor: '#183e7c', outlineWidth: 0.15, shadow }, subtitle: { size: 41, color: '#d4dcfe', outlineColor: '#3a4668', outlineWidth: 0.1, shadow }, reward: { size: 37, color: '#ffeca0', outlineColor: '#7a420c', outlineWidth: 0.18, shadow } }` | Titan One sizes giving the mockups' cap heights (66, 29, 26 px; its caps are 0.71 em), and the measured title and subtitle colours. |
+| `ui.overlays.titleY` / `subtitleY` | `398` / `488` | The mockups' title and subtitle centres. |
+| `ui.overlays.pause.buttonsY` | `[590, 718, 846]` | Three buttons of one width and gap; SOUND ends 69 px above the panel's edge. |
+| `ui.overlays.win` | `{ coin: { x: 398, y: 650, width: 214 }, rewardY: 784, buttonY: 870, bobPx: 6, bobPeriodMs: 2400, popFromScale: 0.3 }` | The coin 7 px higher and 7% smaller than in the mockup and the button 6 px lower, so "+X" fits between them with even gaps; its pop and bob. |
+| `ui.overlays.lose` | `{ bubble: { x: 401, y: 660, size: 218, fill: <radial gradient>, glow, glowBlur: 18, arcs }, block: { x: 400, y: 660, width: 166 }, floating: [7 x [dx, dy, r, 'light' / 'dark']], smallFill, buttonY: 864, floatPx: 5, floatPeriodMs: 2600 }` | The bubble fitted to the mockup (centre and radius), the block, the small bubbles, the float. |
+| `debug.panelParam` / `frameWindow` | `'debug'` / `240` | `?debug` shows the debug panel in any build; frame statistics over the last 240 frames. |
+
 ### Checks
 
 - **Tests.** 293 headless tests. The 3D step added 21:
@@ -1002,6 +1226,43 @@ Gameplay background, HUD, slots and layout (2D step 2; the layout values changed
   - `computeLayout`: exactly 3 reserve rows that fit the reserve rect, a bigger `unitSize` than before that still fits
     its cell and slot, and (existing tests) deep-equal slot, reserve and unit rects on every level with every board
     inside `boardRegion`.
+
+  2D step 3 added 34 (327 in all):
+  - `OverlayController` (11):
+    - the settings panel opens only over a running level, and only one overlay shows at a time (no result over the
+      settings, no settings over a result);
+    - every press is ignored while an overlay enters or leaves;
+    - each button's command, sent after the exit animation; the sound toggle keeps the panel open; buttons of another
+      overlay are ignored;
+    - a level load resets it, and PLAY AGAIN appears only after the last level.
+  - `computeOverlayLayout` (5):
+    - the artboard's width goes onto the design frame's width and its centre onto the frame's centre;
+    - the panel stays inside the frame on phone, tablet, desktop and landscape;
+    - panel coordinates;
+    - the three settings buttons fit inside the panel with one gap.
+  - `RenderGate` (5), `FreeLists` (4), and `FrameStats` with the `?debug` param (5).
+  - The architecture test also holds `OverlayController`, `RenderGate` and `FreeLists` to the pure rule.
+- **Overlays (2D step 3).** Checked on the production build at 390 x 844 (2x), 768 x 1024 and 1920 x 1080.
+  - **Pause.** It opens from the settings button and freezes the game: over 2 s with 4 fish running, the step count, all
+    16 fish animation clocks and the effects clock stayed the same, and the scene was not drawn. RESUME, the settings
+    button again and Escape (a real key) resume; RESTART LEVEL restarts. SOUND toggles the label and the mute and
+    keeps the panel. A tap on the dim does nothing.
+  - **Win.** Level 1, "+50", CONTINUE: the "+X" flew from the big coin to the HUD coin, the coins counted to 50, and
+    Level 2 loaded. Panda showed CONTINUE; Carrot showed PLAY AGAIN, which loaded Level 1 with 150 coins.
+  - **Lose** (5 fish parked, slots blocked). RETRY played the exit, with the phase still LOST until it ended, then
+    restarted the level: 420 blocks and 15 reserve fish, coins kept.
+  - **Mouse:** real clicks on the settings button, SOUND and RESUME, with the tap and overlay sounds playing.
+  - **Keyboard:** Tab moved the focus to RESTART LEVEL with its 3 px ring, and an Enter / Space keydown squashes it.
+    The in-app browser cannot send those two keys, so activation is the native `<button>` behaviour.
+  - **Touch:** the in-app browser's mobile emulation turns taps into mouse clicks, so real touch input was not
+    available. The buttons are `<button>`s with `touch-action: manipulation`.
+  - **Fonts and buttons:** every overlay button and the start screen's Play share the same CSS rules and
+    `PILL_BUTTON`, and all overlay text is Titan One.
+  - **Mockups:** each overlay was captured at 390 x 844, 2x (the browser's own rendering of the DOM through an SVG
+    `foreignObject`), cropped to the artboard and set next to its mockup.
+- **Visual regression (performance).** Level 1 and Carrot were captured before and after the fixes, at start and
+  mid-play. The blocks are pixel-identical; the only differences are the flowing chevrons' and the fish's animation
+  phases.
 - **Gameplay screens (2D step 2).** Checked in the browser at 390 x 844, 768 x 1024 and 1920 x 1080, on Level 1, Panda
   and Carrot.
   - The background is under everything, contained and never stretched, and fades into its blurred copy.
@@ -1081,3 +1342,30 @@ Gameplay background, HUD, slots and layout (2D step 2; the layout values changed
   the system font.
 - **Busy sand.** The Play button covers the key, a pink cube and the edge of the treasure chest in the art.
 - **Focus ring timing.** Browsers that ignore `focus({ focusVisible: false })` show the ring from the start.
+- **No CPU throttling test.** The in-app browser has no 4x CPU throttling, so the performance numbers are at full speed
+  on this machine; the frame budget left (under 1.5 ms of 16.7 ms) is the margin for slower phones.
+- **Tight pause buttons.** With the pill's own aspect (800 x 257), three buttons 350 artboard px wide at 590 / 718 /
+  846 leave 16 px between them; the mockup's two buttons had about 49.
+
+### Known differences from the mockups
+
+- **Backdrop: dim only, no blur.** The mockups blur the game behind the panel. That would need `backdrop-filter` or a
+  snapshot of the game canvas, both left out for performance; the dim is a flat translucent colour.
+- **Titles: no inner bevel.** The mockups' titles have a white inner bevel. The CSS titles are a gradient (with a
+  lighter band near the top of the capitals, a plain gradient stop), a thick outline and a soft shadow; there is no
+  extra layer or filter for the bevel.
+- **Subtitles: thinner outline.** Titan One is heavier than the mockups' condensed subtitle font, so the subtitles keep
+  a thin outline.
+- **Win layout.** The mockup has no reward. To fit "+X" between the coin and CONTINUE with even gaps, the coin is 7 px
+  higher and 7% smaller, and the button 6 px lower.
+- **Pause layout.** The mockup has two buttons; the third (SOUND) moves all three to 590 / 718 / 846 artboard px.
+- **Bubble.** The bubble and its small floating bubbles are CSS, close to the mockup but simpler (see the overlay
+  pipeline).
+
+### Credits
+
+- **2D art.** Illustrations AI-generated with Gemini; UI mockups composed in Photoshop by Ana. This covers the start
+  screen art and the Play button (`start_screen.jfif`, `button_green.jfif`), the gameplay background
+  (`gameplay_bg.jfif`), the HUD sheet (`hud_sheet.png`), the three overlay mockups
+  (`assets/ui/source/overlays/`), and the big coin and the sad block cut from them.
+- **Font.** Titan One by Rodrigo Fuenzalida, SIL Open Font License 1.1 (`public/assets/fonts/TitanOne-OFL.txt`).

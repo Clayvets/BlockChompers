@@ -3,9 +3,9 @@ import * as THREE from 'three';
 /**
  * The VFX reskin seam, like PrimitiveFactory: the ONLY place that creates effect geometries and materials. Each
  * effect type is one InstancedMesh of a plain shape (no textures, no image assets), preallocated to its cap in
- * Config.render.vfx, with a per-instance colour and a per-instance opacity. VfxManager and ConfettiLayer only write
- * instance transforms, colours and opacities, so changing a look -- e.g. projectiles becoming bubbles -- touches only
- * the matching method below and render config.
+ * Config.render.vfx, with a per-instance colour and a per-instance opacity. VfxManager only writes instance transforms,
+ * colours and opacities, so changing a look -- e.g. projectiles becoming bubbles -- touches only the matching method
+ * below and render config. (The win confetti is a 2D canvas: ConfettiLayer.)
  */
 export class VfxFactory {
   constructor(config) {
@@ -55,11 +55,6 @@ export class VfxFactory {
   /** Sparks for trails, block bursts and death pops: tiny cubes, like loose pixels of the art. */
   particles(cap) {
     return this.#instanced(new THREE.BoxGeometry(1, 1, 1), this.#material('particle', THREE.FrontSide), cap);
-  }
-
-  /** Confetti: flat rectangles, seen from both sides while they flip. */
-  confetti(cap) {
-    return this.#instanced(new THREE.PlaneGeometry(1, 1), this.#material('confetti', THREE.DoubleSide), cap);
   }
 
   /** The flat white a block turns for a moment when a projectile hits it. */
