@@ -30,9 +30,14 @@ function phaseOf(id) {
  *   track(context)    the canal as InstancedMeshes built from the GLB geometry: one per piece type (straight, corner)
  *                     and material, the entry corner tinted through its instance colour, and chevrons flowing along
  *                     the canal's centre line in the travel direction (group.userData.animator / dispose)
- * Everything else (blocks, tiles, slots, labels, text, outlines) comes from PrimitiveFactory unchanged, and a model
+ *   slot(status)      2D step 2: the glass slot tile (render.slotTile) as a textured plane, one shared texture and a
+ *                     material per status
+ * Everything else (blocks, tiles, labels, text, outlines) comes from PrimitiveFactory unchanged, and a model or texture
  * that failed to load falls back to its primitive. GLB meshes are put on render.lighting.layer: only the model lights
  * reach them (see Renderer.render).
+ *
+ * A fish is render.layout.unitSize long (in the reserve and in a slot, the same on every level); on the track the
+ * Renderer scales it by trackScale() so it fits the level's one-cell canal (fitModel.fishLength).
  */
 export class StyledFactory extends PrimitiveFactory {
   /**
@@ -46,9 +51,12 @@ export class StyledFactory extends PrimitiveFactory {
     this.modelLayer = config.render.lighting.layer;
     this._tints = new Map();
     this._fish = undefined;
-    this._fishLength = config.render.layout.unitSize;
+    this._fishLength = config.render.layout.unitSize * config.render.models.fish.scale;
+    this._trackLength = this._fishLength;
     this._pickGeometry = new THREE.BoxGeometry(1, 1, 1);
     this._pickMaterial = new THREE.MeshBasicMaterial();
+    this._slotMaterials = new Map();
+    this._slotGeometry = null;
   }
 
   /** Every GLB this factory uses; main.js preloads them before the start screen. */
@@ -57,18 +65,67 @@ export class StyledFactory extends PrimitiveFactory {
     return [fish.url, track.straightUrl, track.cornerUrl, track.chevronUrl];
   }
 
-  /** The level's layout: the fish size depends on its cellSize (it must fit the one-cell canal). */
+  /** Every texture this factory uses; main.js preloads them with the GLBs. */
+  static textureUrls(config) {
+    return [config.render.slotTile.url];
+  }
+
+  /** The level's layout: on the track the fish must fit the one-cell canal, so its track length depends on cellSize. */
   setLayout(layout) {
     const fish = this.#fishTemplate();
     const cfg = this.models.fish;
-    this._fishLength = fish
+    this._trackLength = fish
       ? fishLength({ unitSize: this.layout.unitSize, scale: cfg.scale, cellSize: layout.cellSize, canalFit: cfg.canalFit, widthOverLength: fish.widthOverLength })
-      : this.layout.unitSize;
+      : this._fishLength;
   }
 
-  /** Length (world units) of a unit on this level, nose to tail: where projectiles leave from. */
+  /** Length (world units) of a unit on the track, nose to tail: where projectiles leave from. */
   unitLength() {
-    return this._fishLength;
+    return this._trackLength;
+  }
+
+  /** Size of a fish on the track relative to its reserve / slot size (<= 1: it fits the canal). */
+  trackScale() {
+    return this._trackLength / this._fishLength;
+  }
+
+  /** Width of a fish seen from above, at its reserve / slot size: the capacity number is sized from it. */
+  unitWidth() {
+    const fish = this.#fishTemplate();
+    return fish ? this._fishLength * fish.widthOverLength : super.unitWidth();
+  }
+
+  /** A fish's fade copy keeps its tint (a new tinted material: same shader program, its own uniforms). */
+  fadeCopy(material, color) {
+    const fish = this.#fishTemplate();
+    if (!fish || !this._tints.has(this.style.palette[color]) || this._tints.get(this.style.palette[color]) !== material) return super.fadeCopy(material);
+    const copy = fishTintMaterial(fish.baseMaterial, this.style.palette[color], this.models.fish.tint);
+    copy.toneMapped = this.models.fish.toneMapped;
+    return copy;
+  }
+
+  /** Glass slot tile (render.slotTile), layout.slotSize wide; the flat slot if its texture did not load. */
+  slot(status, index) {
+    if (!this.assets.texture(this.render.slotTile.url)) return super.slot(status, index);
+    if (!this._slotGeometry) {
+      const { slotSize } = this.layout;
+      this._slotGeometry = new THREE.PlaneGeometry(slotSize, slotSize).rotateX(-Math.PI / 2);
+    }
+    const mesh = new THREE.Mesh(this._slotGeometry, this.slotMaterial(status));
+    mesh.userData = { kind: 'slot', id: index };
+    return mesh;
+  }
+
+  /** One material per status over the shared tile texture (the tint multiplies it). */
+  slotMaterial(status) {
+    const texture = this.assets.texture(this.render.slotTile.url);
+    if (!texture) return super.slotMaterial(status);
+    let material = this._slotMaterials.get(status);
+    if (!material) {
+      material = new THREE.MeshBasicMaterial({ map: texture, color: this.render.slotTile.tint[status], transparent: true, depthWrite: false });
+      this._slotMaterials.set(status, material);
+    }
+    return material;
   }
 
   unit(color, id) {
@@ -87,7 +144,7 @@ export class StyledFactory extends PrimitiveFactory {
       object.frustumCulled = false; // animated skin bounds are the bind pose's; the fish is small and always on screen
       if (object.isSkinnedMesh) skinned.push(object);
     });
-    // Centre the model on its bounding box, face +X, and scale it to this level's length.
+    // Centre the model on its bounding box, face +X, and scale it to its reserve / slot length.
     model.position.set(-fish.center.x, -fish.center.y, -fish.center.z);
     const pivot = new THREE.Group();
     pivot.add(model);
@@ -247,9 +304,12 @@ export class StyledFactory extends PrimitiveFactory {
     super.dispose();
     for (const material of this._tints.values()) material.dispose();
     this._tints.clear();
+    for (const material of this._slotMaterials.values()) material.dispose();
+    this._slotMaterials.clear();
+    if (this._slotGeometry) this._slotGeometry.dispose();
     this._pickGeometry.dispose();
     this._pickMaterial.dispose();
-    // The GLB assets themselves belong to the AssetLoader and stay cached.
+    // The GLB and texture assets themselves belong to the AssetLoader and stay cached.
   }
 }
 

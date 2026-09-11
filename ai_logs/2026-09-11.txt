@@ -588,3 +588,91 @@ Confirmed. Proceed with Stage 2.
 
 4) Font and button: Titan One approved; self-host the .woff2 with its OFL license file. 800 px approved as the exported PNG width. On screen, the button size still comes from ui.startScreen.playButton.widthPct relative to the image rect, not from the PNG's pixel size.
 
+=== 2026-09-11T10:52:28-05:00 | session 567fdf5c ===
+Task: Fish of Fortune styled version, 2D step 2: gameplay background, HUD and slots, plus a reserve and fish-size layout change.
+
+SCOPE (strict):
+- In scope:
+  - the gameplay background image, drawn beneath everything;
+  - the HUD from the sheet: settings button, level bar, coin bar with coin icon;
+  - the 5 slot tiles;
+  - showing only 3 reserve rows;
+  - bigger fish, with the capacity number drawn in a smaller font size. This is only the text size; the capacity value itself never changes.
+- Out of scope, do NOT change: the start screen, the win/lose overlays, the settings panel, blocks and empty tiles, the track, VFX and SFX. They keep their current look.
+- src/core, the level files and the core tests must not change; everything here is presentation.
+- Follow the existing config structure: ui.* for DOM UI, render.* and render.layout for the scene. Every new value goes in config. Don't add npm dependencies without asking.
+
+Source images (never modify them):
+- assets/ui/source/gameplay_bg.jfif: portrait underwater background with a painted framed area in the middle.
+- assets/ui/source/hud_sheet.png: a sheet on a flat grey background with, from left to right, the level bar, the coin bar with its coin icon, and a round settings button; below them, 5 glass slot tiles.
+- If assets/ui/source/hud/ contains separate higher-resolution PNGs of these elements, use those instead of cutting the sheet.
+
+STAGE 1 – Process the assets, then STOP for my approval:
+1) Extend tools/ui/process_ui.py and the "process:ui" script.
+2) Background: export public/assets/ui/gameplay_bg.webp (quality ~85, max 1080 px wide). Report its size and aspect, and the painted frame's rect as percentages of the image.
+3) Cut the sheet into separate transparent PNGs in public/assets/ui/hud/:
+   - level_bar.png, coin_bar.png, coin_icon.png, settings_button.png and slot_tile.png;
+   - pick the cleanest of the 5 identical tiles for slot_tile.png;
+   - remove the grey background with clean anti-aliased edges, no grey fringe, and highlights intact;
+   - keep baked shadows only if they separate cleanly; otherwise drop them and add the shadow in CSS.
+4) Resolution check: the sheet is small. For each element, compare its source pixel size with its on-screen size at devicePixelRatio 2 on a 390×844 viewport. If any element would be upscaled, list it and recommend re-exporting it from Figma at 3x.
+5) Render previews of every cutout over dark and light backgrounds into tools/ui/preview_hud.png, then STOP.
+
+STAGE 2 – Integration (after approval):
+1) Gameplay background:
+   - Draw it beneath the board, track, fish, slots and reserve, using the same approach as the start screen: fitted inside the portrait design frame, with a blurred, darkened copy filling any extra viewport space and never stretched.
+   - It replaces the per-level flat scene backgrounds; keep those keys only as a fallback if the image fails to load.
+   - Align boardRegion's center with the painted frame's center when the layout allows it; otherwise report the offset.
+   - Readability: black and white blocks must stay readable over the art. If they don't, add a subtle translucent backing panel behind the board (color, opacity and corner radius in config) instead of changing the art.
+   - Preload and decode it in main.js like the other assets, with a console error and the flat fallback on failure.
+2) HUD (DOM, same positions as v3):
+   - Settings button top-left, level bar centered at the top, coin bar top-right with the coin icon overlapping its left end, as in the sheet.
+   - Real <button> for settings: squash on pointerdown, bounce on release, :focus-visible ring; it opens the existing settings panel.
+   - Text inside the bars ("Level 1" and the money amount) uses Titan One in white with a dark outline, matching the Play button. It shrinks to fit if the amount grows, and bars keep their aspect ratio.
+   - Keep every v3 animation: HUD slide-in, level label transition, coin count-up punch. The "+$X" fly now lands on the coin icon.
+   - The HUD scales with the design frame, so sizes are identical on every level and viewport.
+3) Slots: replace the flat slot planes with slot_tile.png as textured planes (transparent, sRGB, shared texture and material), size render.layout.slotSize. Fish parking, the "N/5" counter and the v3 slot animations keep working.
+4) Reserve shows only 3 rows:
+   - render.layout.reserveVisibleRows = 3. Only units in the first 3 rows of each column are rendered; deeper units are hidden and aren't raycast targets.
+   - When a column shifts up, the units move up with the existing easing and stagger, and the unit entering row 3 slides in from half a cell below while fading in. Use opacity and position only; no stencil or clipping.
+   - Put the visibility math in a pure function src/render/layout/computeReserveVisibility.js (no three, no DOM): (reserveColumns, visibleRows) → visible units with their row index and the ones entering.
+5) Bigger fish, smaller number text:
+   - Recompute the layout: the reserve region now uses 3 rows instead of 7, so give the freed space to bigger reserve cells and fish (render.layout.unitSize) and to the board region.
+   - Slots, reserve and fish sizes stay identical across levels, as in the layout fix.
+   - Capacity label font size only: the number on the fish's back is drawn with a smaller font relative to the fish, so the fish reads bigger than its number and the countdown animation is easier to see. Add render.layout.labelFontScale = text height as a fraction of the fish width, starting at 0.45.
+   - The capacity value, its rules and how it decreases stay exactly the same; only the text size changes.
+   - The label uses Titan One in white with a dark outline, and is regenerated only when the number changes.
+   - The v3 number animation (old number out, new number pops in) and the death pop must be clearly visible at the new sizes.
+   - Fish on the track keep unitSize; check they still fit the canal on Level 1, Panda and Carrot.
+
+Tests (node, no DOM, no Three.js):
+- computeReserveVisibility: at most 3 visible rows per column; after a pick the column shifts and the correct unit becomes visible and entering; columns with fewer than 3 units work; an empty column works.
+- computeLayout: the reserve rect fits 3 rows; unitSize is larger than before; slot, reserve and unit rects are deep-equal across all levels; the board stays inside boardRegion.
+- no-render-imports.test.js, all core tests and the build stay green.
+
+Check at 390×844, 768×1024 and 1920×1080:
+- the background is under everything with no stretching;
+- the HUD matches the sheet and is crisp;
+- slots show the glass tiles;
+- only 3 reserve rows are visible and the reveal animation is smooth;
+- the fish are bigger, and the number text is smaller relative to the fish and readable;
+- blocks are readable on Level 1, Panda and Carrot;
+- FPS and draw calls are close to the previous step.
+
+README: in the "Styled – Fish of Fortune" section, add the new assets and processing, the AI-generated credit for the background (Gemini), the 3-visible-rows change with its reason (more space, bigger fish, smaller label text), and the new config keys.
+
+Report the resolution check, the layout values before and after (unitSize, reserve and board regions), the label font scale, and a proposed commit message.
+
+=== 2026-09-11T11:10:08-05:00 | session 567fdf5c ===
+Decisions. Proceed with Stage 2.
+
+1) Level bar: it is only a static label container, not a progress bar. It shows the current level as "Level 1", "Level 2" or "Level 3" and nothing else.
+- No fill, no progress value, no fill animation, and no inner track or bar graphic. If the rebuilt pill has an inner fill layer or a progress element, remove it.
+- The only dynamic part is the text. It changes on level load with the existing v3 label transition.
+- Use the rebuilt pill for now. Keep the final file name (public/assets/ui/hud/level_bar.png), its aspect ratio and its size in config, so the real export can later replace just the file with no code changes. List it under known limitations in the README as "level bar rebuilt, pending Figma export".
+- The coin bar works the same way: a static container with the coin icon and the money amount, with no fill.
+
+2) Painted frame: accept the offset. Keep the board in boardRegion; don't move or shrink the board to match the art, and don't regenerate the art. Report the offset. The painted frame must not compete with the board: add the translucent backing panel behind the board (color, opacity, corner radius and padding in config) and tune it so the frame edges don't show awkwardly around it. Show me a screenshot of Level 1 and Carrot with the panel.
+
+3) Background width: raise it to 1170 px so 3x phones aren't upscaled. Keep webp quality ~85 and report the final file size.
+

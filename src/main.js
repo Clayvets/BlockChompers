@@ -15,7 +15,9 @@ import { ConfettiLayer } from './render/vfx/ConfettiLayer.js';
 import { AudioManager } from './audio/AudioManager.js';
 import { InputManager } from './input/InputManager.js';
 import { UIManager } from './ui/UIManager.js';
-import { loadStartScreenArt } from './ui/startScreenArt.js';
+import { loadStartScreenArt, loadUiFont } from './ui/startScreenArt.js';
+import { loadHudArt } from './ui/hudArt.js';
+import { GameBackground } from './ui/GameBackground.js';
 import { EffectsPreference, EffectsMode } from './ui/EffectsPreference.js';
 import { SoundPreference } from './ui/SoundPreference.js';
 
@@ -23,6 +25,7 @@ import { SoundPreference } from './ui/SoundPreference.js';
 const canvas = document.querySelector('#canvas-game');
 const fxCanvas = document.querySelector('#canvas-fx');
 const uiRoot = document.querySelector('#ui-root');
+const bgRoot = document.querySelector('#game-bg');
 
 // Debug level select: ?level=<id> plays that level on its own (see Config.debug.levelParam).
 const debug = pickDebugLevel(window.location.search, levelLibrary, Config.debug.levelParam);
@@ -46,15 +49,21 @@ const levelColors = (levelId) => {
   return Object.values({ ...palette, ...((styles[levelId] || {}).palette || {}) });
 };
 
-// Fish of Fortune look: every GLB is loaded once before the start screen appears (no loading screen; a file that fails
-// logs an error and its primitive is used instead). StyledFactory replaces only the units and the track. The styled
-// start screen's images (decoded) and label font are awaited the same way; if one fails, the console names it and the
-// flat v3 start screen is used.
+// Fish of Fortune look: every asset is loaded once before the start screen appears (no loading screen). A file that
+// fails logs an error naming it and its part keeps the v3 look: a model or the slot texture its primitive, the start
+// screen or the HUD their flat v3 versions, the background art the flat level colours. The label font (Titan One) is
+// loaded once for the start screen, the HUD and the capacity numbers.
 const assets = new AssetLoader();
-const [, startArt] = await Promise.all([
+const font = loadUiFont(config.ui.startScreen.font);
+const [, , startArt, hudArt, backgroundImage] = await Promise.all([
   assets.preload(StyledFactory.assetUrls(config)),
-  loadStartScreenArt(config.ui.startScreen, assets),
+  Promise.all(StyledFactory.textureUrls(config).map((url) => assets.loadTexture(url))),
+  loadStartScreenArt(config.ui.startScreen, assets, { font }),
+  loadHudArt(config.ui.hud, assets, { font, fontUrl: config.ui.startScreen.font.url }),
+  assets.loadImage(config.render.backgroundArt.url),
 ]);
+if (!backgroundImage) console.error(`Background: could not load "${config.render.backgroundArt.url}"; using the flat level colours instead`);
+const background = backgroundImage ? new GameBackground({ root: bgRoot, config: config.render.backgroundArt, image: backgroundImage }) : null;
 const renderer = new Renderer({ canvas, config, cues, factory: new StyledFactory(config, assets) });
 const confetti = new ConfettiLayer({ canvas: fxCanvas, config, factory: new VfxFactory(config) });
 const audio = new AudioManager({ config, eventBus, cues });
@@ -69,6 +78,7 @@ const ui = new UIManager({
   sound,
   cues,
   startArt,
+  hudArt,
   hooks: {
     onWinShown: () => confetti.burst(levelColors(game.getSnapshot().levelId)),
     onResultClosed: () => confetti.stop(),
@@ -77,11 +87,18 @@ const ui = new UIManager({
 
 renderer.init();
 confetti.init();
-renderer.setViewportInsets({ top: config.ui.sizes.barHeight }); // keep the board below the HUD bar
+renderer.setBackgroundArt(Boolean(background));
+if (background) background.mount();
+// Keep the board below the HUD: the styled HUD is a band in design units, the flat v3 bar a fixed pixel height.
+if (hudArt) renderer.setHudBand(config.ui.hud.band);
+else renderer.setViewportInsets({ top: config.ui.sizes.barHeight });
 const resize = () => {
   renderer.resize(window.innerWidth, window.innerHeight);
   confetti.resize(window.innerWidth, window.innerHeight);
-  ui.resize();
+  // The DOM layers follow where the Renderer put the design.
+  const frame = renderer.screenFrame();
+  ui.resize(frame);
+  if (background) background.layout(frame);
 };
 resize();
 const unbinds = [
@@ -96,6 +113,7 @@ const unbinds = [
 ];
 input.attach();
 ui.mount();
+ui.resize(renderer.screenFrame());
 // Config.debug.enabled: layout outlines (Renderer) and a panel with cellSize, FPS, draw calls, particles, memory, voices.
 const debugPanel = config.debug.enabled ? new DebugPanel({ root: uiRoot, config }) : null;
 if (debugPanel) debugPanel.mount();
@@ -158,6 +176,7 @@ if (import.meta.hot) {
     if (debugPanel) debugPanel.unmount();
     audio.dispose();
     confetti.dispose();
+    if (background) background.unmount();
     assets.dispose();
     renderer.dispose();
   });

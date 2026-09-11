@@ -23,7 +23,11 @@ const place = (el, { x, y, width, height }) => {
  *               title and a big Play button on a card. Play plays the exit animation, then starts the flow
  *               (AppFlow.play: Level 1 loads and the HUD slides in).
  *   bar      -- settings button, "Level N", money. Slides in at every level start; the level label swaps with a
- *               slide; the money counts up with a punch when the "+$X" reward label lands on it.
+ *               slide; the money counts up with a punch when the "+$X" reward label lands on it. Styled (Fish of
+ *               Fortune, Config.ui.hud) when main.js passes its loaded images: the round settings button, the level bar
+ *               and the coin bar with the coin over its left end, sized in design units from the Renderer's
+ *               screenFrame() (resize(frame)), with white Titan One text that shrinks to fit; the reward lands on the
+ *               coin. Otherwise the flat v3 bar.
  *   settings -- panel shown while paused (Resume, Restart level, Sound on/off); slides and fades in and out.
  *   result   -- win card ("Congratulations!", "+$X", Continue / Play again) or lose card ("Out of space", Retry).
  *               Backdrop fades in, the card pops in with overshoot (softer for a loss, whose title shakes), and the
@@ -50,16 +54,21 @@ export class UIManager {
   #closing = false;
   #starting = false;
   #settingsOpen = false;
+  /** The Renderer's screenFrame() from the last resize: the styled HUD is sized from it. */
+  #frame = null;
 
   /**
    * @param {{ root: HTMLElement, eventBus: object, gameManager: object, config?: object,
    *           flow?: import('../app/AppFlow.js').AppFlow, effects?: import('./EffectsPreference.js').EffectsPreference,
    *           sound?: import('./SoundPreference.js').SoundPreference, cues?: import('../app/Cues.js').CueBus,
    *           startArt?: { background: HTMLImageElement, button: HTMLImageElement } | null,
+   *           hudArt?: { settings: HTMLImageElement, levelBar: HTMLImageElement, coinBar: HTMLImageElement,
+   *                      coin: HTMLImageElement } | null,
    *           hooks?: { onWinShown?: Function, onResultClosed?: Function } }} deps
    *   startArt: the styled start screen's decoded images (startScreenArt.js); null keeps the flat v3 start screen.
+   *   hudArt: the styled HUD's decoded images (hudArt.js); null keeps the flat v3 bar.
    */
-  constructor({ root, eventBus, gameManager, config = gameManager.config, flow = null, effects = null, sound = null, cues = null, startArt = null, hooks = {} }) {
+  constructor({ root, eventBus, gameManager, config = gameManager.config, flow = null, effects = null, sound = null, cues = null, startArt = null, hudArt = null, hooks = {} }) {
     this.root = root;
     this.eventBus = eventBus;
     this.gameManager = gameManager;
@@ -69,6 +78,7 @@ export class UIManager {
     this.sound = sound;
     this.cues = cues;
     this.startArt = startArt;
+    this.hudArt = hudArt;
     this.hooks = hooks;
   }
 
@@ -84,14 +94,8 @@ export class UIManager {
     this.#publishTokens();
     this.root.ownerDocument.title = text.title;
 
-    const bar = this.#make('div', 'bar');
-    const settingsButton = this.#button('icon-button', '', () => this.gameManager.pause());
-    settingsButton.title = text.settings;
-    settingsButton.setAttribute('aria-label', text.settings);
-    for (let i = 0; i < 3; i += 1) settingsButton.append(this.#make('span', 'icon-bar'));
-    const levelLabel = this.#make('div', 'bar-level');
-    const moneyLabel = this.#make('div', 'bar-money');
-    bar.append(settingsButton, levelLabel, moneyLabel);
+    const hud = this.hudArt ? this.#styledBar(this.hudArt) : this.#flatBar();
+    const { bar, settingsButton } = hud;
 
     const settings = this.#modal(text.paused, [
       ['button', text.resume, () => this.gameManager.resume()],
@@ -107,7 +111,7 @@ export class UIManager {
     fly.hidden = true;
 
     this.root.append(bar, settings.root, result.root, start.root, fly);
-    this.#els = { bar, settingsButton, levelLabel, moneyLabel, settings, result, start, fly };
+    this.#els = { ...hud, settings, result, start, fly };
     this.#shown = {};
     this.#renderSoundLabel();
 
@@ -143,6 +147,7 @@ export class UIManager {
     const { levelNumber, money } = snapshot.progress;
     if (this.#shown.levelNumber === undefined) {
       levelLabel.textContent = `${text.level} ${levelNumber}`;
+      this.#fitText(levelLabel);
       this.#shown.levelNumber = levelNumber;
     } else if (this.#changed('levelNumber', levelNumber)) {
       this.#swapLevelLabel(`${text.level} ${levelNumber}`);
@@ -157,7 +162,9 @@ export class UIManager {
     const shownMoney = Math.round(this.#money.value);
     const counting = this.#shown.money !== undefined;
     if (this.#changed('money', shownMoney)) {
-      this.#els.moneyLabel.textContent = `${text.currency}${shownMoney}`;
+      const label = `${text.currency}${shownMoney}`;
+      this.#els.moneyLabel.textContent = label;
+      if (this.#changed('moneyLength', label.length)) this.#fitText(this.#els.moneyLabel); // only when it can get wider
       if (counting) this.#cue(Cues.COIN);
     }
     if (snapshot.paused !== this.#settingsOpen) this.#setSettingsOpen(snapshot.paused);
@@ -165,9 +172,104 @@ export class UIManager {
     if (this.#changed('playing', playing)) settingsButton.disabled = !playing;
   }
 
-  /** Viewport size changed: the styled start screen re-anchors its art and Play button (main.js calls it on resize). */
-  resize() {
-    if (this.#els) this.#layoutStart();
+  /**
+   * Viewport size changed (main.js, after the Renderer refitted): the styled start screen re-anchors its art and Play
+   * button, and the styled HUD takes its sizes from the design frame.
+   * @param {{ scale: number, width: number, hud: { h: number } } | null} [frame] Renderer.screenFrame()
+   */
+  resize(frame = null) {
+    if (!this.#els) return;
+    if (frame) this.#frame = frame;
+    this.#layoutStart();
+    this.#layoutHud();
+  }
+
+  /** Flat v3 bar: settings (three-line icon), "Level N", money. */
+  #flatBar() {
+    const { text } = this.config.ui;
+    const bar = this.#make('div', 'bar');
+    const settingsButton = this.#button('icon-button', '', () => this.gameManager.pause());
+    settingsButton.title = text.settings;
+    settingsButton.setAttribute('aria-label', text.settings);
+    for (let i = 0; i < 3; i += 1) settingsButton.append(this.#make('span', 'icon-bar'));
+    const levelLabel = this.#make('div', 'bar-level');
+    const moneyLabel = this.#make('div', 'bar-money');
+    bar.append(settingsButton, levelLabel, moneyLabel);
+    return { bar, settingsButton, levelLabel, moneyLabel, styled: false };
+  }
+
+  /**
+   * Styled HUD from the sheet: the round settings button (the v3 press and release), the level bar and the coin bar
+   * with the coin over its left end. The bars are static containers; each holds a text box (its inset part of the
+   * bar) around the label, so the label's own transform is free for the v3 swap and punch animations.
+   */
+  #styledBar(art) {
+    const { text } = this.config.ui;
+    const bar = this.#make('div', 'bar hud-styled');
+    const settingsButton = this.#button('hud-settings', '', () => this.gameManager.pause());
+    settingsButton.title = text.settings;
+    settingsButton.setAttribute('aria-label', text.settings);
+    settingsButton.style.backgroundImage = `url("${art.settings.src}")`;
+    const level = this.#make('div', 'hud-bar');
+    level.style.backgroundImage = `url("${art.levelBar.src}")`;
+    const levelBox = this.#make('div', 'hud-text-box');
+    const levelLabel = this.#make('span', 'hud-text');
+    levelBox.append(levelLabel);
+    level.append(levelBox);
+    const coinBar = this.#make('div', 'hud-bar');
+    coinBar.style.backgroundImage = `url("${art.coinBar.src}")`;
+    const coinBox = this.#make('div', 'hud-text-box');
+    const moneyLabel = this.#make('span', 'hud-text');
+    coinBox.append(moneyLabel);
+    const coinIcon = art.coin;
+    coinIcon.className = 'hud-coin-icon';
+    coinIcon.alt = '';
+    coinIcon.draggable = false;
+    coinBar.append(coinBox, coinIcon);
+    bar.append(settingsButton, level, coinBar);
+    return { bar, settingsButton, levelLabel, moneyLabel, coinIcon, level, levelBox, coinBar, coinBox, styled: true };
+  }
+
+  /** Styled HUD sizes and places (CSS px) from the design frame: Config.ui.hud lengths are design units. */
+  #layoutHud() {
+    const els = this.#els;
+    const frame = this.#frame;
+    if (!els.styled || !frame) return;
+    const h = this.config.ui.hud;
+    const s = frame.scale;
+    const band = frame.hud.h;
+    els.bar.style.height = `${band}px`;
+    const d = h.dropShadow;
+    els.bar.style.setProperty('--ui-hud-drop', `drop-shadow(0 ${d.offsetY * s}px ${d.blur * s}px ${d.color})`);
+    const size = h.settings.size * s;
+    const pad = h.padding * s;
+    place(els.settingsButton, { x: pad, y: (band - size) / 2, width: size, height: size });
+    const lh = h.levelBar.height * s;
+    const lw = lh * h.levelBar.aspect;
+    place(els.level, { x: (frame.width - lw) / 2, y: (band - lh) / 2, width: lw, height: lh });
+    const ch = h.coinBar.height * s;
+    const cw = ch * h.coinBar.aspect;
+    place(els.coinBar, { x: frame.width - pad - cw, y: (band - ch) / 2, width: cw, height: ch });
+    const coin = h.coin.size * ch;
+    place(els.coinIcon, { x: h.coin.centerX * cw - coin / 2, y: h.coin.centerY * ch - coin / 2, width: coin, height: coin });
+    const { levelInsets, coinInsets } = h.text;
+    for (const [box, width, [left, right], barHeight] of [[els.levelBox, lw, levelInsets, lh], [els.coinBox, cw, coinInsets, ch]]) {
+      box.style.left = `${left * width}px`;
+      box.style.right = `${right * width}px`;
+      box.firstChild.dataset.fontSize = String(h.text.size * barHeight);
+    }
+    this.#fitText(els.levelLabel);
+    this.#fitText(els.moneyLabel);
+  }
+
+  /** Styled HUD: the label at its configured size, shrunk to fit its text box if the text is wider. */
+  #fitText(label) {
+    const base = Number(label.dataset.fontSize);
+    if (!this.#els || !this.#els.styled || !base) return;
+    label.style.fontSize = `${base}px`;
+    const room = label.parentElement.clientWidth;
+    const need = label.offsetWidth;
+    if (need > room && room > 0) label.style.fontSize = `${(base * room) / need}px`;
   }
 
   #inMenu() {
@@ -283,6 +385,7 @@ export class UIManager {
     const out = this.#animate(el, [{ transform: 'translateY(0)', opacity: 1 }, { transform: `translateY(${-a.labelShift}px)`, opacity: 0 }], a.labelOutMs, a.exit);
     const enter = () => {
       el.textContent = label;
+      this.#fitText(el);
       this.#animate(el, [{ transform: `translateY(${a.labelShift}px)`, opacity: 0 }, { transform: 'translateY(0)', opacity: 1 }], a.labelInMs, a.overshoot);
     };
     if (out) out.finished.then(enter, enter);
@@ -428,12 +531,12 @@ export class UIManager {
     else done();
   }
 
-  /** "+$X" flies from the win card to the money counter; the count-up starts when it lands. */
+  /** "+$X" flies from the win card to the money counter (the coin icon on the styled HUD); the count-up starts when it lands. */
   #flyReward() {
     const a = this.config.ui.anim;
-    const { fly, result, moneyLabel } = this.#els;
+    const { fly, result, moneyLabel, coinIcon } = this.#els;
     const from = result.reward.getBoundingClientRect();
-    const to = moneyLabel.getBoundingClientRect();
+    const to = (coinIcon || moneyLabel).getBoundingClientRect();
     fly.textContent = result.reward.textContent;
     fly.hidden = false;
     const x0 = from.left + from.width / 2;
@@ -545,5 +648,12 @@ export class UIManager {
     style.setProperty('--ui-start-hover', `brightness(${p.hoverBrightness})`);
     style.setProperty('--ui-start-focus', `${p.focusWidth}px solid ${p.focusColor}`);
     style.setProperty('--ui-start-focus-offset', `${p.focusOffset}px`);
+    const { text: t, focusColor, focusWidth, focusOffset } = this.config.ui.hud;
+    style.setProperty('--ui-hud-text-color', t.color);
+    style.setProperty('--ui-hud-outline', `${t.outlineWidth}em ${t.outlineColor}`);
+    style.setProperty('--ui-hud-shadow', t.shadow);
+    style.setProperty('--ui-hud-offset', `${t.offsetY}em`);
+    style.setProperty('--ui-hud-focus', `${focusWidth}px solid ${focusColor}`);
+    style.setProperty('--ui-hud-focus-offset', `${focusOffset}px`);
   }
 }

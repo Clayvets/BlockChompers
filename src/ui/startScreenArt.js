@@ -6,14 +6,15 @@
  *
  * @param {object} config  Config.ui.startScreen
  * @param {{ loadImage: (url: string) => Promise<HTMLImageElement | null> }} assets  the AssetLoader
- * @param {{ fonts?: FontFaceSet, FontFace?: typeof FontFace }} [env]  injectable for tests
+ * @param {{ font?: Promise<boolean>, fonts?: FontFaceSet, FontFace?: typeof FontFace }} [env]  font: an already started
+ *   loadUiFont() of the same font (main.js shares it with the HUD); fonts / FontFace: injectable for tests
  * @returns {Promise<{ background: HTMLImageElement, button: HTMLImageElement, font: string } | null>}
  */
-export async function loadStartScreenArt(config, assets, { fonts = globalThis.document && globalThis.document.fonts, FontFace = globalThis.FontFace } = {}) {
+export async function loadStartScreenArt(config, assets, env = {}) {
   const [background, button, font] = await Promise.all([
     assets.loadImage(config.background),
     assets.loadImage(config.button),
-    loadFont(config.font, fonts, FontFace),
+    env.font || loadUiFont(config.font, env),
   ]);
   const missing = [[background, config.background], [button, config.button], [font, config.font.url]]
     .filter(([loaded]) => !loaded)
@@ -25,8 +26,14 @@ export async function loadStartScreenArt(config, assets, { fonts = globalThis.do
   return { background, button, font: config.font.family };
 }
 
-/** @returns {Promise<boolean>} true once the face is loaded and usable */
-async function loadFont({ family, url }, fonts, FontFace) {
+/**
+ * The UI's display font (Config.ui.startScreen.font: Titan One, self-hosted): a FontFace added to document.fonts and
+ * awaited with document.fonts.load, so nothing draws it in a fallback font. A failure is logged with the file.
+ * @param {{ family: string, url: string }} font
+ * @param {{ fonts?: FontFaceSet, FontFace?: typeof FontFace }} [env]  injectable for tests
+ * @returns {Promise<boolean>} true once the face is loaded and usable
+ */
+export async function loadUiFont({ family, url }, { fonts = globalThis.document && globalThis.document.fonts, FontFace = globalThis.FontFace } = {}) {
   if (!fonts || !FontFace) return false;
   try {
     fonts.add(new FontFace(family, `url("${url}") format("woff2")`));

@@ -9,8 +9,10 @@
  *     boardRegion, slotsRegion, reserveRegion,        // copies of the configured rects
  *     cellSize, board, boardOrigin,                   // the level's scaled board
  *     slots, reserve, unit, label, counter,           // constant-size elements
- *     reserveOverflow,                                // true when the level needs more reserve rows than fit
  *   }
+ *
+ * The reserve shows reserveVisibleRows rows whatever a level needs: deeper units are hidden
+ * (computeReserveVisibility.js) and come up into view as their column moves.
  *
  * Rects are { x, y, w, h } with (x, y) the top-left corner.
  */
@@ -39,19 +41,19 @@ export function fitView(designWidth, designHeight, aspect) {
 }
 
 /**
- * @param {{ rows: number, cols: number, margin: number, reserveRows?: number }} levelDims grid size, track margin (cells)
- *   and, optionally, the reserve rows the level needs
+ * @param {{ rows: number, cols: number, margin: number }} levelDims grid size and track margin (cells)
  * @param {{ designWidth: number, designHeight: number, boardRegion: object, slotsRegion: object, reserveRegion: object,
- *           slotSize: number, reserveCellSize: number, unitSize: number, labelSize: number,
- *           counter: { x: number, y: number, height: number }, maxCellSize: number,
- *           slotCount: number, reserveCols: number }} layoutConfig render.layout plus the slot and reserve column counts
+ *           slotSize: number, reserveCellSize: number, reserveVisibleRows: number, unitSize: number,
+ *           labelFontScale: number, labelMinHeight: number, counter: { x: number, y: number, height: number },
+ *           maxCellSize: number, slotCount: number, reserveCols: number }} layoutConfig render.layout plus the slot and
+ *   reserve column counts
  * @param {number} viewportAspect usable viewport width / height (below the HUD)
  */
 export function computeLayout(levelDims, layoutConfig, viewportAspect) {
-  const { rows, cols, margin, reserveRows = 0 } = levelDims;
+  const { rows, cols, margin } = levelDims;
   const {
-    designWidth, designHeight, boardRegion, slotsRegion, reserveRegion,
-    slotSize, reserveCellSize, unitSize, labelSize, counter, maxCellSize, slotCount, reserveCols,
+    designWidth, designHeight, boardRegion, slotsRegion, reserveRegion, slotSize, reserveCellSize, reserveVisibleRows,
+    unitSize, labelFontScale, labelMinHeight, counter, maxCellSize, slotCount, reserveCols,
   } = layoutConfig;
 
   // Board: the grid plus the track ring on every side ("boardCols/boardRows include the track and its offset").
@@ -76,8 +78,9 @@ export function computeLayout(levelDims, layoutConfig, viewportAspect) {
   const slotY = slotsRegion.y + (slotsRegion.h - slotSize) / 2;
   const slots = Array.from({ length: slotCount }, (_, i) => ({ x: slotX0 + i * slotSize, y: slotY, w: slotSize, h: slotSize }));
 
-  // Reserve: reserveCols columns, as many rows as fit, centred horizontally, front row (0) at the top.
-  const capacity = Math.floor(reserveRegion.h / reserveCellSize + EPS);
+  // Reserve: reserveCols columns of reserveVisibleRows rows (fewer if they do not fit), centred horizontally, front
+  // row (0) at the top.
+  const capacity = Math.min(Math.floor(reserveRegion.h / reserveCellSize + EPS), reserveVisibleRows);
   const resX0 = reserveRegion.x + (reserveRegion.w - reserveCols * reserveCellSize) / 2;
   const cells = [];
   for (let row = 0; row < capacity; row += 1) {
@@ -105,9 +108,8 @@ export function computeLayout(levelDims, layoutConfig, viewportAspect) {
     slots,
     reserve,
     unit: { size: unitSize },
-    label: { size: labelSize },
+    label: { fontScale: labelFontScale, minHeight: labelMinHeight },
     counter: { x: counter.x, y: counter.y, height: counter.height },
-    reserveOverflow: reserveRows > capacity,
   };
 }
 

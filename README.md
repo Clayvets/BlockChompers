@@ -618,11 +618,13 @@ v3 dropped it. The table lists every key v3 added or removed; v3 changed no exis
 The Fish of Fortune look arrives in steps:
 - **3D step 1:** the artist's fish replaces the triangle units, and the artist's canal replaces the flat track tiles.
 - **2D step 1:** the key art, with its painted title, and an image Play button replace the flat start screen.
+- **2D step 2:** a painted gameplay background, the HUD from the HUD sheet and glass slot tiles. The reserve shows only
+  3 rows, which leaves room for bigger fish with a smaller capacity number.
 
-Everything else is exactly as in v3: the HUD, the settings, win and lose overlays, the "N/5" counter, capacity
-labels, blocks, slots, reserve tiles, background, effects and sound. `src/core`, the level files and their tests are
-unchanged, and so are `PrimitiveFactory`, `VfxFactory` and `SfxBank`. `UIManager` changed only for the start screen,
-and `AppFlow` still goes from MENU to PLAYING, with Play loading Level 1.
+Everything else is exactly as in v3: the settings, win and lose overlays, the "N/5" counter, blocks, empty ring and
+reserve tiles, effects and sound. `src/core`, the level files and their tests are unchanged, and so are `VfxFactory`
+and `SfxBank`; the capacity rules are untouched (only the number's size changed). `AppFlow` still goes from MENU to
+PLAYING, with Play loading Level 1.
 
 ### 3D asset pipeline
 
@@ -750,6 +752,54 @@ the closest to the painted title's weight and roundness and reads best at button
 it is Apache-2.0, not OFL. The `.woff2` is Google Fonts' Latin subset, downloaded once from fonts.gstatic.com and
 self-hosted, so the game runs offline and loads no CDN.
 
+### 2D asset pipeline (gameplay background, HUD, slots)
+
+**Source.** Two more images in `assets/ui/source/`, only read by the script. The gameplay background was
+AI-generated with Gemini.
+
+| File | Contents |
+|---|---|
+| `gameplay_bg.jfif` | JPEG, 1536 x 2752 (24:43, like the start art): an underwater scene with a painted framed basin in the middle |
+| `hud_sheet.png` | PNG, 656 x 456, already transparent: the coin bar with the coin over its left end, the round settings button, and one glass slot tile |
+
+`npm run process:ui` processes them with the start screen art; `npm run process:ui -- --only gameplay` or
+`--only hud` runs one group. Running it again writes byte-identical files.
+
+**Background.** Converted to WebP at quality 85 and scaled to `maxWidth` 1170 px, so 3x phones (390 CSS px x 3) are
+not upscaled. The painted frame, measured by eye on a 2.5% grid (about ±1%), is x 26.0%, y 35.5%, 47.5% wide and
+26.5% tall of the image, centred at (49.75%, 48.75%); `tools/ui/preview_gameplay_bg.png` outlines it.
+
+**HUD sheet.** It has no background to remove, but its alpha is almost binary, so every edge is a jagged pixel step.
+Each element gets a new matte drawn at 4x and averaged down, and the matte's pixels that are not fully opaque in the
+sheet take the colour of the nearest opaque ones (the art's own outline), so there is no fringe:
+- **Settings button and slot tile:** the convex hull of their pixels (a circle and a rounded square). The sheet has a
+  single tile, used as is.
+- **Coin icon:** a circle fitted to its left half, which the bar does not cover (diameter 173 px).
+- **Bars:** the sheet has one bar, with its left end hidden under the coin. The right end cap is mirrored to make the
+  left one, and the straight middle, which only changes vertically, is stretched to length. The coin bar's rebuilt
+  left end stays hidden under the coin, so coin bar + coin icon recompose the sheet. The sheet has no level bar:
+  `level_bar.png` is the same pill at aspect 3.0 until the real one is exported from Figma.
+- **Shadows:** the sheet has no baked shadows; a soft CSS drop shadow (`ui.hud.dropShadow`) goes under the HUD pieces.
+
+**Output**
+
+| File | Size | Contents |
+|---|---|---|
+| `public/assets/ui/gameplay_bg.webp` | 211.1 KB | 1170 x 2096, aspect 0.558 |
+| `public/assets/ui/hud/settings_button.png` | 30.4 KB | 178 x 178 |
+| `public/assets/ui/hud/level_bar.png` | 49.0 KB | 419 x 143 (rebuilt pill, aspect 2.93 with padding) |
+| `public/assets/ui/hud/coin_bar.png` | 43.0 KB | 306 x 143 |
+| `public/assets/ui/hud/coin_icon.png` | 24.5 KB | 178 x 178; on the coin bar: centre (-0.022, 0.495) of the bar image, width 1.245 x its height |
+| `public/assets/ui/hud/slot_tile.png` | 43.2 KB | 209 x 210 |
+| `tools/ui/preview_hud.png` | 543.9 KB | Every cutout over a dark and a light background, bar + coin next to the sheet's original, edges zoomed 4x |
+| `tools/ui/preview_gameplay_bg.png` | | The background with the measured frame outlined |
+
+**Resolution.** On a 390 x 844 phone at devicePixelRatio 2, nothing is upscaled: the HUD pieces have about 1.9x the
+pixels they are drawn at (settings 45 CSS px, bars 37 px tall, coin 46 px), the slot tile 2.2x (47 px), the
+background 1.5x.
+At devicePixelRatio 3 the bars get close to 1:1 (1.3x). A 3x export from Figma would sharpen the sheet's edges and
+provide the real level bar.
+
 ### In the game
 
 - **Loading.** `src/render/assets/AssetLoader.js` loads every GLB once, before the start screen appears; there is no
@@ -809,6 +859,69 @@ self-hosted, so the game runs offline and loads no CDN.
       animation, then Level 1.
   - **Text title.** `ui.text.title` is no longer drawn over the art: it is the document title and the start screen's
     `aria-label`.
+- **Loading (2D step 2).** `main.js` loads the background, the four HUD images (decoded) and the slot texture with the
+  GLBs, and Titan One once for the start screen, the HUD and the capacity numbers. Each part falls back on its own,
+  with a console error naming the file: the flat level colours, the flat v3 HUD bar, or the flat slots.
+- **Gameplay background.** `src/ui/GameBackground.js` draws it in the DOM beneath the game canvas, which is transparent
+  when the art loaded (`Renderer.setBackgroundArt`).
+  - As on the start screen, the art is contained in the portrait design frame (`src/ui/layout/containRect.js`), never
+    cropped or stretched, and a blurred, darkened cover copy of it fills the rest of the viewport.
+  - Where the copy shows beside the art (above and below it on phones, also at the sides on wide screens), the art's
+    edge fades into it (`edgeFade`), so there is no seam.
+  - It replaces the per-level flat backgrounds, which stay as the fallback; the win and lose tint of v3 applies to the
+    flat backgrounds only.
+- **Board panel.** A translucent rounded panel sits behind the board (grid and canal), drawn before the canal so the
+  water blends over it.
+  - It is a mid-tone teal like v3's level backgrounds. Over the art under a board it keeps black and white blocks
+    above 3:1 contrast on 95% of the area (black 3.5:1 and white 3.2:1 at worst, about 4.3:1 typically). A dark panel
+    made white blocks pop but dropped black to 1.6:1.
+  - At 75% opacity it also quiets the painted frame under the board.
+- **Painted frame offset.** The board stays in `boardRegion`. The painted frame is smaller and lower: in design units
+  it is a 4.75 x 4.75 square centred at (4.98, 9.78), while `boardRegion` is 9.2 x 13.75 centred at (5.0, 7.23). The
+  frame's centre is 2.55 units (100 px on a 390 px phone) below the board's, and it sits behind the board's lower half.
+- **HUD.** DOM, in v3's positions: the settings button top-left, the level bar centred, the coin bar top-right with
+  the coin over its left end, as in the sheet.
+  - Its sizes are design units: the Renderer keeps the design below a HUD band of `ui.hud.band` units
+    (`setHudBand`), and `screenFrame()` tells the UI how many pixels a unit is. So the HUD keeps the same proportions to
+    the board on every level and viewport.
+  - Settings is a real `<button>` with the v3 squash and bounce, a `:focus-visible` ring, and it opens the settings
+    panel.
+  - The bars are static containers with no fill or progress: only their text changes. It is white Titan One with a dark
+    outline, like the Play button, and it shrinks to fit its box when the amount grows.
+  - The v3 animations stay: the HUD slides in, the level label swaps, and the money counts up with a punch. The "+$X"
+    reward now lands on the coin icon.
+- **Slots.** The glass tile is a textured plane `layout.slotSize` wide (transparent, sRGB). The texture is shared, with
+  one material per status: free is untinted, blocked is tinted red. Parking, the "N/5" counter and the slot tints work as
+  before.
+- **Reserve: 3 visible rows.** Only the first `layout.reserveVisibleRows` (3) rows of each column are drawn. Deeper
+  units are hidden, never picked and not animated. This frees the space of 4 reserve rows for bigger reserve cells and
+  fish and a bigger board, and the smaller number reads better on the bigger fish.
+  - The pure `src/render/layout/computeReserveVisibility.js` gives the visible units with their row, and the entering
+    ones. It runs only when the inventory changes.
+  - When a column moves up, its units glide with the v3 easing and stagger. The unit reaching row 3 comes from half a
+    cell below and fades in over `reserveEnterMs`, using opacity and position only (no stencil or clipping). While it
+    fades, its fish uses a private copy of its tinted material.
+- **Bigger fish, smaller numbers.**
+  - A unit is `layout.unitSize` (1.0) long in the reserve and in a slot, the same on every level.
+  - On the track a fish still fits its one-cell canal: it shrinks to `trackScale()` along its launch flight and grows
+    back on its return glide. Its width is 0.80 of the canal on Level 1, Panda and Carrot (0.659, 0.549 and 0.48 long).
+  - The capacity number's digits are `labelFontScale` (0.45) x the fish's width tall: 0.25 units on a 0.56-wide fish,
+    about the absolute size of v3's number on a fish 67% longer.
+  - On a fish shrunk for the canal the number stays at least `labelMinHeight` (0.2) tall, so it is readable.
+  - The number is Titan One in white with a dark outline, drawn only when it changes. The v3 number swap and the death
+    pop scale with the fish.
+
+**Layout change** (design units, the same on every level):
+
+| | Before | After |
+|---|---|---|
+| `unitSize` (fish length in the reserve and slots) | 0.6 | 1.0 |
+| `reserveRegion` | x 0.4, y 14.35, 9.2 x 5.25 (7 rows of 0.75) | x 0.4, y 15.95, 9.2 x 3.75 (3 rows of 1.25) |
+| `slotsRegion` / `slotSize` | y 12.9, h 1 / 1.0 | y 14.45, h 1.2 / 1.2 |
+| `boardRegion` | x 0.4, y 0.4, 9.2 x 12 | x 0.4, y 0.35, 9.2 x 13.75 |
+| Board cell: Level 1 / Panda / Carrot | 0.46 / 0.383 / 0.293 | 0.46 / 0.383 / 0.335 (the two wide boards are limited by the width) |
+| Capacity number | `labelSize` 0.45 (sprite) | `labelFontScale` 0.45 x fish width (digits), `labelMinHeight` 0.2 |
+| "N/5" counter | (8.3, 13.4), 0.55 high | (8.85, 15.05), 0.6 high |
 
 ### New config keys
 
@@ -846,9 +959,28 @@ Start screen (`ui.startScreen`; the flat v3 fallback keeps its `ui.text`, `ui.co
 | `ui.startScreen.playButton.pulseScale` / `pulsePeriodMs` | `1.04` / `1600` | The idle breathing. |
 | `ui.startScreen.playButton.focusColor` / `focusWidth` / `focusOffset` | `'#ffffff'` / `3` / `2` | The keyboard focus ring (px). |
 
+Gameplay background, HUD, slots and layout (2D step 2; the layout values changed are in the table above):
+
+| Config key | Value | Why |
+|---|---|---|
+| `render.layout.reserveVisibleRows` | `3` | Reserve rows drawn; deeper units are hidden and come up as their column moves. |
+| `render.layout.labelFontScale` / `labelMinHeight` | `0.45` / `0.2` | Capacity digits' height as a fraction of the fish's width, and their floor on a fish shrunk for the canal. |
+| `render.reserveEnterOffset` / `reserveEnterMs` | `0.5` / `260` | The unit entering row 3 starts half a cell below and fades in over 260 ms. |
+| `render.label.font` / `outline` / `outlineWidth` | `'40px "Titan One", system-ui, sans-serif'` / `'#10202c'` / `9` | The capacity number in Titan One, white with a dark outline (canvas px). |
+| `render.slotTile` | `{ url: 'assets/ui/hud/slot_tile.png', tint: { free: 0xffffff, blocked: 0xff8a8a } }` | The glass tile and its tint per slot status. |
+| `render.backgroundArt` | `{ url: 'assets/ui/gameplay_bg.webp', frame: [0.26, 0.355, 0.475, 0.265], backdrop: { blurPx: 18, brightness: 0.55, saturate: 1.1, scale: 1.1, color: '#0b2a3d' }, edgeFade: 0.04 }` | The art, its measured painted frame, the blurred copy around it and the edge fade into it. |
+| `render.boardPanel` | `{ color: 0x3d7896, opacity: 0.75, radius: 0.35, padding: 0.3 }` | The mid-tone panel behind the board: black and white blocks both above 3:1. |
+| `ui.hud.band` / `padding` | `1.4` / `0.3` | The HUD band above the design and the distance from the viewport's sides, in design units. |
+| `ui.hud.settings` | `{ url: 'assets/ui/hud/settings_button.png', size: 1.15 }` | The round settings button. |
+| `ui.hud.levelBar` | `{ url: 'assets/ui/hud/level_bar.png', aspect: 419 / 143, height: 0.95 }` | The level bar; a real export only needs its file, aspect and height. |
+| `ui.hud.coinBar` / `coin` | `{ url: 'assets/ui/hud/coin_bar.png', aspect: 306 / 143, height: 0.95 }` / `{ url: 'assets/ui/hud/coin_icon.png', centerX: -0.0218, centerY: 0.495, size: 1.2448 }` | The coin bar, and the coin over its left end as in the sheet. |
+| `ui.hud.text` | `{ size: 0.44, offsetY: -0.08, color: '#ffffff', outlineColor: '#0b3550', outlineWidth: 0.17, shadow: '0 0.08em 0.1em rgba(0, 0, 0, 0.45)', levelInsets: [0.1, 0.1], coinInsets: [0.36, 0.1] }` | The bars' text, styled like the Play button, and its box inside each bar (the coin covers the coin bar's left part). |
+| `ui.hud.dropShadow` | `{ offsetY: 0.05, blur: 0.08, color: 'rgba(0, 20, 40, 0.45)' }` | Soft shadow under the HUD pieces, in design units. |
+| `ui.hud.focusColor` / `focusWidth` / `focusOffset` | `'#ffffff'` / `3` / `2` | The settings button's focus ring (px). |
+
 ### Checks
 
-- **Tests.** 285 headless tests. The 3D step added 21:
+- **Tests.** 293 headless tests. The 3D step added 21:
   - `computeTrackPieces`: every ring cell covered once with corners in the 4 corners on every level, rims outward,
     headings along core Track travel for cw and ccw, and the chevron loop.
   - The exported pieces placed side by side: identical top surfaces across every joint, with no step and no hole.
@@ -862,6 +994,27 @@ Start screen (`ui.startScreen`; the flat v3 fallback keeps its `ui.text`, `ui.co
   - `startScreenArt.js` with stand-in loaders: each failed image or font gives the v3 fallback and a console error
     naming the file.
   - `src/ui/layout` joins `src/core` and `src/config` in the architecture test: no DOM, Three.js, clock or randomness.
+
+  2D step 2 added 8:
+  - `computeReserveVisibility`: at most 3 visible rows per column; after a pick the column moves up and the right unit
+    becomes visible and entering; short and empty columns; a restart does not count as entering; a real Carrot game
+    (7 rows deep) reveals the next unit of the picked column.
+  - `computeLayout`: exactly 3 reserve rows that fit the reserve rect, a bigger `unitSize` than before that still fits
+    its cell and slot, and (existing tests) deep-equal slot, reserve and unit rects on every level with every board
+    inside `boardRegion`.
+- **Gameplay screens (2D step 2).** Checked in the browser at 390 x 844, 768 x 1024 and 1920 x 1080, on Level 1, Panda
+  and Carrot.
+  - The background is under everything, contained and never stretched, and fades into its blurred copy.
+  - The HUD matches the sheet and stays crisp. Settings squashes and opens the paused panel, the level label swaps,
+    the money counts up, the reward's flight ends on the coin's centre, and a long amount shrinks to fit its box.
+  - The slots show the glass tiles, and the reserve shows exactly 3 rows. The unit entering row 3 fades in while
+    rising the last half cell.
+  - The fish are bigger and their number is smaller relative to them. Black and white blocks read on all three levels.
+  - Hiding the background, the settings image and the slot tile brought back the flat colours, the flat v3 bar and the
+    flat slots, each with a console error naming the file.
+  - Performance, same harness and canvas as below, Carrot with five units firing: CPU 2.4 ms per frame (2.2 before),
+    4.2–4.3 ms with the GPU wait (4.4–4.6 before), 632 draw calls (663 before), GPU textures 44 (59 before). Hidden
+    reserve fish are neither drawn nor animated.
 - **Start screen.** Checked in the browser at 390 x 844, 768 x 1024 and 1920 x 1080. The title is fully visible and
   the button's centre sits at (0.500, 0.875) of the art at every size: 179 x 58 px on the phone, 263 x 84 px on the
   tablet, 277 x 89 px on the desktop.
@@ -903,17 +1056,27 @@ Start screen (`ui.startScreen`; the flat v3 fallback keeps its `ui.text`, `ui.co
 
 ### Known limitations
 
-- **Labels over small fish.** Capacity labels keep their v3 size, so on Panda and Carrot they cover more of the
-  smaller fish, most of all in the reserve.
-- **Low contrast on light backgrounds.** The rail's pale water sits on the levels' light-blue backgrounds with less
-  contrast than v3's darker ring tiles.
-- **Fish overlap when close.** Runners keep one cell apart (`track.launchSpacing`), and a fish is longer than a cell
-  on every level (0.60 on Level 1's 0.46 cells), so fish right behind each other overlap end to end. The v3 cones
-  overlapped too, by more on Panda and Carrot.
-- **Fish cost.** On Carrot, the 25 skinned fish about double the time the GPU still needs once a frame is submitted
-  (see Performance). Idle fish in the reserve and slots still animate and upload their skeletons every frame.
+- **Level bar rebuilt, pending Figma export.** The HUD sheet has no level bar: `level_bar.png` is the coin bar's pill
+  rebuilt by the processing script. The real export can replace the file; if its shape differs, only
+  `ui.hud.levelBar.aspect` and `height` change.
+- **Painted frame offset.** The painted frame covers under a fifth of the board region's area (4.75 x 4.75 against
+  9.2 x 13.75 design units) and its centre is 2.55 units below the region's. The board is not moved or shrunk to match; the backing panel quiets the frame behind it.
+- **Numbers on track fish.** On the track a fish shrinks to fit its canal, but its number keeps `labelMinHeight`, so on
+  small canals (Carrot) the number is nearly as wide as the fish.
+- **Low contrast on the flat fallback.** Without the background art, the rail's pale water sits on the levels'
+  light-blue backgrounds with less contrast than v3's darker ring tiles.
+- **Fish overlap when close.** Runners keep one cell apart (`track.launchSpacing`), and a fish on the track is longer
+  than a cell on every level (0.66 on Level 1's 0.46 cells), so fish right behind each other overlap end to end.
+- **Fish cost.** On Carrot, the skinned fish about double the time the GPU still needs once a frame is submitted (see
+  Performance). Visible idle fish in the reserve and slots still animate and upload their skeletons every frame.
+- **HUD sheet resolution.** The sheet is small: its pieces have about 1.9x the pixels they are drawn at on a 2x phone,
+  but only 1.3x on a 3x one, and its edges were rebuilt from hard, pixel-stepped alpha. A 3x export would be sharper.
+- **Background art bands.** The art (24:43) is shorter than the design frame, so on phones about 45 px of its blurred
+  copy show above and below it, and its edge fades there (the HUD sits on the upper band, the reserve's last row on
+  the lower one).
+- **No end tint on the art.** v3 tints the flat background on a win or a loss; the art is not tinted.
 - **Blurred bands on wide screens.** The art is 24:43, so on a 16:9 desktop the blurred copy fills about two thirds of
-  the width.
+  the width (start screen and gameplay).
 - **Latin-only font.** The self-hosted Titan One covers Google Fonts' Latin subset only; other characters fall back to
   the system font.
 - **Busy sand.** The Play button covers the key, a pink cube and the edge of the treasure chest in the art.

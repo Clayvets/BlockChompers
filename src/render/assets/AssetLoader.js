@@ -7,8 +7,9 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
  * reported with a console error naming it and resolves to null, so the game still starts: StyledFactory then falls
  * back to the primitive for that model.
  *
- * It also loads the start screen's images (loadImage): each is decoded (img.decode()) before its promise resolves, so
- * it paints on the first frame; a failure is logged the same way and resolves to null.
+ * It also loads the DOM layers' images (loadImage): each is decoded (img.decode()) before its promise resolves, so it
+ * paints on the first frame; and the scene's textures (loadTexture, sRGB). A failure is logged the same way and
+ * resolves to null.
  */
 export class AssetLoader {
   /** @type {Map<string, Promise<object | null>>} */
@@ -17,9 +18,38 @@ export class AssetLoader {
   #loaded = new Map();
   /** @type {Map<string, Promise<HTMLImageElement | null>>} */
   #images = new Map();
+  /** @type {Map<string, Promise<THREE.Texture | null>>} */
+  #textures = new Map();
+  /** @type {Map<string, THREE.Texture>} */
+  #loadedTextures = new Map();
 
-  constructor({ loader = new GLTFLoader() } = {}) {
+  constructor({ loader = new GLTFLoader(), textureLoader = new THREE.TextureLoader() } = {}) {
     this.loader = loader;
+    this.textureLoader = textureLoader;
+  }
+
+  /** @returns {Promise<THREE.Texture | null>} the texture (sRGB), or null if it failed */
+  loadTexture(url) {
+    if (!this.#textures.has(url)) {
+      const promise = this.textureLoader.loadAsync(url).then(
+        (texture) => {
+          texture.colorSpace = THREE.SRGBColorSpace;
+          this.#loadedTextures.set(url, texture);
+          return texture;
+        },
+        (error) => {
+          console.error(`AssetLoader: could not load texture "${url}" (${error && error.message ? error.message : error}); using the flat look instead`);
+          return null;
+        },
+      );
+      this.#textures.set(url, promise);
+    }
+    return this.#textures.get(url);
+  }
+
+  /** The loaded texture for `url`, or null if it is not loaded (or failed). */
+  texture(url) {
+    return this.#loadedTextures.get(url) || null;
   }
 
   /** @param {string[]} urls @returns {Promise<Array<object | null>>} */
@@ -79,9 +109,12 @@ export class AssetLoader {
         }
       });
     }
+    for (const texture of this.#loadedTextures.values()) texture.dispose();
     this.#loaded.clear();
     this.#pending.clear();
     this.#images.clear();
+    this.#textures.clear();
+    this.#loadedTextures.clear();
   }
 }
 

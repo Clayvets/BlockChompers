@@ -22,6 +22,31 @@
     "previewZoom": 4,
     "previewZoomBox": 0.3
   },
+  "gameplayBackground": {
+    "source": "assets/ui/source/gameplay_bg.jfif",
+    "output": "public/assets/ui/gameplay_bg.webp",
+    "maxWidth": 1170,
+    "quality": 85,
+    "frame": [0.26, 0.355, 0.475, 0.265],
+    "preview": "tools/ui/preview_gameplay_bg.png",
+    "previewWidth": 540
+  },
+  "hud": {
+    "source": "assets/ui/source/hud_sheet.png",
+    "outDir": "public/assets/ui/hud",
+    "preview": "tools/ui/preview_hud.png",
+    "alphaThreshold": 128,
+    "supersample": 4,
+    "edgeRings": 3,
+    "padding": 2,
+    "coin": { "box": [20, 5, 215, 200], "output": "coin_icon.png" },
+    "bar": { "box": [20, 5, 440, 200], "clearance": 3, "coinOutput": "coin_bar.png", "levelOutput": "level_bar.png", "levelAspect": 3.0 },
+    "settings": { "box": [440, 5, 630, 200], "output": "settings_button.png" },
+    "tile": { "box": [30, 225, 260, 450], "output": "slot_tile.png" },
+    "previewBackgrounds": ["#1b2330", "#f3eee4"],
+    "previewZoom": 4,
+    "previewZoomBox": 40
+  },
   "fontPreview": {
     "output": "tools/ui/preview_fonts.png",
     "titleSource": "assets/ui/source/start_screen.jfif",

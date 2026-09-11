@@ -1,3 +1,5 @@
+import { containRect } from './containRect.js';
+
 /**
  * Layout of the styled start screen (pure: no DOM, no clock).
  *
@@ -17,10 +19,8 @@
  */
 export function computeStartScreenLayout(viewport, imageSize, config) {
   const { background, button } = imageSize;
-  const scale = Math.min(viewport.width / background.width, viewport.height / background.height);
-  const width = background.width * scale;
-  const height = background.height * scale;
-  const image = { x: (viewport.width - width) / 2, y: (viewport.height - height) / 2, width, height };
+  const image = containRect(viewport, background);
+  const { width, height } = image;
 
   const { centerX, centerY, widthPct, labelSize } = config.playButton;
   let buttonWidth = width * Math.min(widthPct, 1);

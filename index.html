@@ -226,9 +226,87 @@
           filter: var(--ui-start-button-shadow) var(--ui-start-hover);
         }
       }
+      /* Styled HUD (Config.ui.hud, --ui-hud-*): UIManager sizes and places every piece from the Renderer's
+         screenFrame() (inline px); the bars are static containers around their text. */
+      #ui-root .bar.hud-styled {
+        display: block;
+        padding: 0;
+        background: none;
+      }
+      #ui-root .hud-styled > * {
+        position: absolute;
+        filter: var(--ui-hud-drop);
+      }
+      #ui-root .hud-settings {
+        padding: 0;
+        border-radius: 50%;
+        background: transparent center / 100% 100% no-repeat;
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+      }
+      #ui-root .hud-settings:focus {
+        outline: none;
+      }
+      #ui-root .hud-settings:focus-visible {
+        outline: var(--ui-hud-focus);
+        outline-offset: var(--ui-hud-focus-offset);
+      }
+      #ui-root .hud-bar {
+        background: center / 100% 100% no-repeat;
+      }
+      #ui-root .hud-text-box {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      #ui-root .hud-text {
+        position: relative;
+        top: var(--ui-hud-offset); /* centres the capitals on the bar */
+        display: inline-block;
+        white-space: nowrap;
+        font-family: var(--ui-start-font);
+        line-height: 1;
+        color: var(--ui-hud-text-color);
+        -webkit-text-stroke: var(--ui-hud-outline);
+        paint-order: stroke fill;
+        text-shadow: var(--ui-hud-shadow);
+        font-variant-numeric: tabular-nums;
+      }
+      #ui-root .hud-coin-icon {
+        position: absolute;
+        pointer-events: none;
+      }
+      /* Gameplay background art (Config.render.backgroundArt), beneath the transparent game canvas: a blurred cover
+         copy and the art contained in the design frame (GameBackground places it). */
+      #game-bg {
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        overflow: hidden;
+      }
+      #game-bg[hidden] {
+        display: none;
+      }
+      #game-bg .game-bg-blur {
+        position: absolute;
+        inset: 0;
+        background-position: center;
+        background-size: cover;
+      }
+      #game-bg .game-bg-art {
+        position: absolute;
+        display: block;
+        object-fit: contain;
+        user-select: none;
+        pointer-events: none;
+      }
     </style>
   </head>
   <body>
+    <div id="game-bg" hidden></div>
     <canvas id="canvas-game"></canvas>
     <div id="ui-root"></div>
     <canvas id="canvas-fx"></canvas>

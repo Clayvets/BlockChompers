@@ -114,10 +114,95 @@ export class PrimitiveFactory {
     return new THREE.Mesh(this.#tileGeometry(this.render.track.tileScale), this.#flat(isEntry ? entryColor : guideColor));
   }
 
-  /** A unit's capacity label: a square text sprite styled by render.label, render.layout.labelSize high. */
+  /** Width of a unit seen from above (the cone's base), in world units: the capacity number is sized from it. */
+  unitWidth() {
+    return this.layout.unitSize * this.render.unit.coneRadiusFactor * Math.sqrt(3);
+  }
+
+  /**
+   * World height of a capacity label sprite: its digits are render.layout.labelFontScale x unitWidth() tall. The
+   * digits' share of the canvas is measured once in render.label's font (loaded before any label is drawn).
+   */
+  labelHeight() {
+    if (this._labelHeight === undefined) {
+      const { canvasSize, font } = this.render.label;
+      const ctx = document.createElement('canvas').getContext('2d');
+      ctx.font = font;
+      const m = ctx.measureText('0123456789');
+      const digits = m.actualBoundingBoxAscent + m.actualBoundingBoxDescent;
+      const target = this.layout.labelFontScale * this.unitWidth();
+      this._labelHeight = digits > 0 ? (target * canvasSize) / digits : target * 2;
+    }
+    return this._labelHeight;
+  }
+
+  /** A unit's capacity label: a square text sprite styled by render.label, labelHeight() high. */
   label(text) {
     const { canvasSize, ...style } = this.render.label;
-    return this.text(text, { ...style, canvasWidth: canvasSize, canvasHeight: canvasSize, height: this.layout.labelSize });
+    return this.text(text, { ...style, canvasWidth: canvasSize, canvasHeight: canvasSize, height: this.labelHeight() });
+  }
+
+  /**
+   * Fade a unit's meshes (not its labels) to `opacity`. Their materials are shared per colour, so below 1 each mesh
+   * gets its own transparent copy (fadeCopy); back at 1 the shared one returns and the copy is released.
+   */
+  setUnitOpacity(group, opacity) {
+    const ud = group.userData;
+    if (opacity < 1) {
+      if (!ud.fade) {
+        ud.fade = [];
+        group.traverse((object) => {
+          if (!object.isMesh || !object.visible) return;
+          const copy = this.fadeCopy(object.material, ud.color);
+          copy.transparent = true;
+          ud.fade.push({ mesh: object, shared: object.material, copy });
+          object.material = copy;
+        });
+      }
+      for (const { copy } of ud.fade) copy.opacity = opacity;
+    } else if (ud.fade) {
+      for (const { mesh, shared, copy } of ud.fade) {
+        mesh.material = shared;
+        copy.dispose();
+      }
+      ud.fade = null;
+    }
+  }
+
+  /** A unit material's private copy for a fade (StyledFactory keeps its fish tint). */
+  fadeCopy(material) {
+    return material.clone();
+  }
+
+  /**
+   * Translucent rounded panel behind the board (render.boardPanel), `rect` plus padding, on the ground just under
+   * everything; its geometry is the caller's to dispose (Renderer.clear).
+   */
+  boardPanel({ x, y, w, h }) {
+    const { color, opacity, radius, padding } = this.render.boardPanel;
+    const x0 = x - padding;
+    const x1 = x + w + padding;
+    // Shape space is (x, -y): after rotateX(-90 deg) it lies on the ground facing up, with shape y -> world z.
+    const y0 = -(y + h + padding);
+    const y1 = -(y - padding);
+    const r = Math.min(radius, (x1 - x0) / 2, (y1 - y0) / 2);
+    const shape = new THREE.Shape();
+    shape.moveTo(x0 + r, y0);
+    shape.lineTo(x1 - r, y0);
+    shape.quadraticCurveTo(x1, y0, x1, y0 + r);
+    shape.lineTo(x1, y1 - r);
+    shape.quadraticCurveTo(x1, y1, x1 - r, y1);
+    shape.lineTo(x0 + r, y1);
+    shape.quadraticCurveTo(x0, y1, x0, y1 - r);
+    shape.lineTo(x0, y0 + r);
+    shape.quadraticCurveTo(x0, y0, x0 + r, y0);
+    const material = this.#cached(`panel:${color}:${opacity}`, () => new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity, depthWrite: false, toneMapped: false,
+    }));
+    const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape, 8).rotateX(LAY_FLAT), material);
+    mesh.position.y = -0.02;
+    mesh.renderOrder = -10;
+    return mesh;
   }
 
   /**

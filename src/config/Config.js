@@ -118,22 +118,39 @@ export const Config = Object.freeze({
     layout: Object.freeze({
       designWidth: 10,
       designHeight: 20,
-      /** Grid + track. Its 0.4 margins leave room for units on the ring, which are larger than small cells. */
-      boardRegion: Object.freeze({ x: 0.4, y: 0.4, w: 9.2, h: 12 }),
+      /**
+       * Grid + track. Its margins leave room for units on the ring, which can be larger than small cells (a styled
+       * fish shrinks to fit the canal on the track, but a primitive cone keeps unitSize).
+       */
+      boardRegion: Object.freeze({ x: 0.4, y: 0.35, w: 9.2, h: 13.75 }),
       /** The 5 parking slots, centred in this band. */
-      slotsRegion: Object.freeze({ x: 0.4, y: 12.9, w: 9.2, h: 1 }),
-      /** The reserve: reserveCols columns of reserveCellSize cells, as many rows as fit (7: Carrot needs 7). */
-      reserveRegion: Object.freeze({ x: 0.4, y: 14.35, w: 9.2, h: 5.25 }),
-      /** Slot pitch; the slot tile is slotSize x render.inventory.tileScale. */
-      slotSize: 1,
+      slotsRegion: Object.freeze({ x: 0.4, y: 14.45, w: 9.2, h: 1.2 }),
+      /** The reserve: reserveCols columns of reserveCellSize cells; it shows reserveVisibleRows rows. */
+      reserveRegion: Object.freeze({ x: 0.4, y: 15.95, w: 9.2, h: 3.75 }),
+      /** Slot pitch; the flat slot tile is slotSize x render.inventory.tileScale, the glass tile slotSize. */
+      slotSize: 1.2,
       /** Reserve pitch; the reserve tile is reserveCellSize x render.inventory.tileScale. */
-      reserveCellSize: 0.75,
-      /** Unit (cone) length, the same in the reserve, in a slot and on the track. */
-      unitSize: 0.6,
-      /** Capacity label height. */
-      labelSize: 0.45,
+      reserveCellSize: 1.25,
+      /**
+       * Reserve rows drawn: only units in the first reserveVisibleRows rows of a column are shown (deeper ones are
+       * hidden and never picked). When a column moves up, the unit entering the last row slides in from
+       * render.reserveEnterOffset cells below while it fades in. Fewer rows leave room for bigger fish and board.
+       */
+      reserveVisibleRows: 3,
+      /**
+       * Unit length in the reserve and in a slot, identical on every level. On the track a styled fish shrinks to fit
+       * the canal (render.models.fish.canalFit) and grows back when it returns; a primitive cone keeps this length.
+       */
+      unitSize: 1,
+      /**
+       * Capacity number size: the digits' height as a fraction of the unit's width (the fish seen from above), so the
+       * fish reads bigger than its number. Only the text size: the capacity itself is untouched.
+       */
+      labelFontScale: 0.45,
+      /** Smallest digit height (design units), for a fish shrunk to fit a small board's canal. */
+      labelMinHeight: 0.2,
       /** "N/5" counter centre and text height (width follows render.slotCounter's canvas aspect). */
-      counter: Object.freeze({ x: 8.3, y: 13.4, height: 0.55 }),
+      counter: Object.freeze({ x: 8.85, y: 15.05, height: 0.6 }),
       /** Largest board cell, so small levels do not blow up (0.75: a unit is 0.8 of a cell, as before). */
       maxCellSize: 0.75,
     }),
@@ -165,6 +182,30 @@ export const Config = Object.freeze({
       /** Slot / reserve tile edge as a fraction of layout.slotSize / layout.reserveCellSize. */
       tileScale: 0.9,
     }),
+    /**
+     * Styled slots (Fish of Fortune): the glass tile as a textured plane, layout.slotSize wide, one shared texture and a
+     * material per status (the tint multiplies the tile; blocked = a parked unit holds it). Flat slotColors if it fails.
+     */
+    slotTile: Object.freeze({ url: 'assets/ui/hud/slot_tile.png', tint: Object.freeze({ free: 0xffffff, blocked: 0xff8a8a }) }),
+    /**
+     * Gameplay background art (Fish of Fortune), drawn beneath the scene: contained in the portrait design frame (never
+     * stretched) over a blurred, darkened cover copy of itself. It replaces the per-level flat backgrounds, which stay
+     * as the fallback if it fails to load. frame: the painted frame's rect as fractions of the image (x, y, w, h).
+     */
+    backgroundArt: Object.freeze({
+      url: 'assets/ui/gameplay_bg.webp',
+      frame: Object.freeze([0.26, 0.355, 0.475, 0.265]),
+      backdrop: Object.freeze({ blurPx: 18, brightness: 0.55, saturate: 1.1, scale: 1.1, color: '#0b2a3d' }),
+      /** Where the blurred copy shows beside the art, the art's edge fades into it over this fraction of its size. */
+      edgeFade: 0.04,
+    }),
+    /**
+     * Translucent panel behind the board (grid + canal) over the background art, so the blocks read and the painted
+     * frame's edges stay quiet under it. A mid-tone, like v3's level backgrounds: over the art under a board it keeps
+     * both black and white blocks above 3:1 contrast on 95% of the area (a dark panel drops black to 1.6:1).
+     * padding and radius in design units.
+     */
+    boardPanel: Object.freeze({ color: 0x3d7896, opacity: 0.75, radius: 0.35, padding: 0.3 }),
     /** Physically based (three r155+): lit diffuse ~ colour x intensity / PI, so ~2 + ~1.5 keeps palette colours true. */
     lights: Object.freeze({
       ambient: 0xffffff,
@@ -176,12 +217,16 @@ export const Config = Object.freeze({
     /** The "chomper": a cone lying on its side, apex = heading. */
     unit: Object.freeze({ radialSegments: 3, coneRadiusFactor: 0.45 }),
     /** Capacity number drawn on a CanvasTexture sprite above each unit. */
+    /**
+     * Capacity number: Titan One (loaded before the UI mounts) in white with a dark outline, drawn on the unit's own
+     * canvas only when the number changes. Its size comes from layout.labelFontScale.
+     */
     label: Object.freeze({
       canvasSize: 64,
-      font: 'bold 42px system-ui, sans-serif',
+      font: '40px "Titan One", system-ui, sans-serif',
       color: '#ffffff',
-      outline: '#000000',
-      outlineWidth: 8,
+      outline: '#10202c',
+      outlineWidth: 9,
       /** World height above the ground (top-down, so it only keeps the label above the meshes). */
       yOffset: 1.5,
     }),
@@ -201,6 +246,12 @@ export const Config = Object.freeze({
      *  starting reserveShiftStaggerMs after the unit ahead (the departing unit first) and never closer than one cell. */
     reserveShiftMs: 160,
     reserveShiftStaggerMs: 60,
+    /**
+     * A unit entering the last visible reserve row (layout.reserveVisibleRows) starts reserveEnterOffset cells below it
+     * and moves up while it fades in, over reserveEnterMs (motionEasing), a stagger after the unit ahead of it.
+     */
+    reserveEnterOffset: 0.5,
+    reserveEnterMs: 260,
     /** One curve for every eased move: launch and relaunch flight, return to a slot, reserve shift. */
     motionEasing: 'easeOutCubic',
     /** Launch flight shape: world units the flight first lifts off its start (clear of the reserve row it leaves)... */
@@ -584,6 +635,49 @@ export const Config = Object.freeze({
         focusWidth: 3,
         focusOffset: 2,
       }),
+    }),
+    /**
+     * Styled HUD (Fish of Fortune): settings button top-left, level bar centred, coin bar top-right with the coin over
+     * its left end, as in the HUD sheet. Lengths are design units, so the HUD scales with the design frame and is the
+     * same on every level and viewport. main.js loads the images (decoded) with the label font before the UI mounts; if
+     * one fails, the console names it and the flat v3 bar (colors.bar, sizes.barHeight) is used. Both bars are static
+     * containers: only their text changes.
+     */
+    hud: Object.freeze({
+      /** Height of the HUD band above the design frame; the board stays below it. */
+      band: 1.4,
+      /** Distance of the settings button and the coin bar from the viewport's sides. */
+      padding: 0.3,
+      settings: Object.freeze({ url: 'assets/ui/hud/settings_button.png', size: 1.15 }),
+      /**
+       * The level bar. aspect is the image's width / height and height its size, so a replacement file only needs
+       * these two values changed.
+       */
+      levelBar: Object.freeze({ url: 'assets/ui/hud/level_bar.png', aspect: 419 / 143, height: 0.95 }),
+      coinBar: Object.freeze({ url: 'assets/ui/hud/coin_bar.png', aspect: 306 / 143, height: 0.95 }),
+      /** The coin over the coin bar's left end: centre as fractions of the bar image, width x the bar height. */
+      coin: Object.freeze({ url: 'assets/ui/hud/coin_icon.png', centerX: -0.0218, centerY: 0.495, size: 1.2448 }),
+      /**
+       * Text in the bars, styled like the Play button: font size as a fraction of the bar height, offsetY (em) to centre
+       * the capitals, outline stroke width in em (half of it shows). insets: the text box's left and right edges as
+       * fractions of the bar width (the coin covers the coin bar's left part); the text shrinks to fit its box.
+       */
+      text: Object.freeze({
+        size: 0.44,
+        offsetY: -0.08,
+        color: '#ffffff',
+        outlineColor: '#0b3550',
+        outlineWidth: 0.17,
+        shadow: '0 0.08em 0.1em rgba(0, 0, 0, 0.45)',
+        levelInsets: Object.freeze([0.1, 0.1]),
+        coinInsets: Object.freeze([0.36, 0.1]),
+      }),
+      /** Soft shadow under the HUD pieces (the sheet has none baked), in design units. */
+      dropShadow: Object.freeze({ offsetY: 0.05, blur: 0.08, color: 'rgba(0, 20, 40, 0.45)' }),
+      /** Keyboard focus ring on the settings button (px). */
+      focusColor: '#ffffff',
+      focusWidth: 3,
+      focusOffset: 2,
     }),
   }),
 

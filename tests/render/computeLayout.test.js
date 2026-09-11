@@ -6,12 +6,9 @@ import { Config } from '../../src/config/Config.js';
 
 const LAYOUT = { ...Config.render.layout, slotCount: Config.inventory.activeSlots, reserveCols: Config.inventory.reserveCols };
 const PHONE = 390 / (844 - Config.ui.sizes.barHeight); // usable portrait viewport below the HUD
-const dimsOf = (level) => ({
-  rows: level.grid.length,
-  cols: level.grid[0].length,
-  margin: Config.track.margin,
-  reserveRows: Math.ceil(level.units.length / Config.inventory.reserveCols),
-});
+const dimsOf = (level) => ({ rows: level.grid.length, cols: level.grid[0].length, margin: Config.track.margin });
+/** render.layout.unitSize before the reserve showed only 3 rows (2D step 2): the fish must be bigger now. */
+const PREVIOUS_UNIT_SIZE = 0.6;
 const LEVELS = Object.entries(levelLibrary).map(([id, level]) => ({ id, dims: dimsOf(level) }));
 const layoutOf = (dims, aspect = PHONE) => computeLayout(dims, LAYOUT, aspect);
 const EPS = 1e-9;
@@ -32,7 +29,21 @@ describe('computeLayout (pure, node)', () => {
     for (const other of rest) expect(other).toEqual(first);
     expect(first.slots).toHaveLength(Config.inventory.activeSlots);
     expect(first.unit.size).toBe(Config.render.layout.unitSize);
-    expect(Math.max(...LEVELS.map((l) => l.dims.reserveRows))).toBeLessThanOrEqual(first.reserve.rows); // Carrot's 7 rows fit
+  });
+
+  it('lays out exactly reserveVisibleRows (3) reserve rows, which fit the reserve rect, with bigger units than before', () => {
+    const { reserveVisibleRows, reserveCellSize, unitSize } = Config.render.layout;
+    expect(reserveVisibleRows).toBe(3);
+    for (const { id, dims } of LEVELS) {
+      const { reserve, reserveRegion } = layoutOf(dims);
+      expect(reserve.rows, id).toBe(reserveVisibleRows);
+      expect(reserve.cells, id).toHaveLength(reserveVisibleRows * Config.inventory.reserveCols);
+      expect(reserve.rows * reserveCellSize, id).toBeLessThanOrEqual(reserveRegion.h + EPS);
+      expect(reserve.cols * reserveCellSize, id).toBeLessThanOrEqual(reserveRegion.w + EPS);
+    }
+    expect(unitSize).toBeGreaterThan(PREVIOUS_UNIT_SIZE);
+    expect(unitSize).toBeLessThanOrEqual(reserveCellSize); // a unit still fits its reserve cell...
+    expect(unitSize).toBeLessThanOrEqual(Config.render.layout.slotSize); // ...and its slot
   });
 
   it('keeps every board inside boardRegion, and units on its ring clear of the slots, the reserve and the design edge', () => {
@@ -45,7 +56,6 @@ describe('computeLayout (pure, node)', () => {
       expect(inside(withUnits, layout.design), id).toBe(true);
       expect(overlaps(withUnits, layout.slotsRegion), id).toBe(false);
       expect(overlaps(withUnits, layout.reserveRegion), id).toBe(false);
-      expect(layout.reserveOverflow, id).toBe(false);
     }
   });
 

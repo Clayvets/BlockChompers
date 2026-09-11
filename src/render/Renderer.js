@@ -10,6 +10,7 @@ import { trackDrawPosition, trackFromSnapshot } from './trackPlacement.js';
 import { HEADING, launchPath, flightProgress, flightPose, entryQueueBacks, returnPose, newPose } from './launchPlacement.js';
 import { computeLayout, fitView, boardPoint, slotPoint, reservePoint } from './layout/computeLayout.js';
 import { computeTrackPieces } from './layout/computeTrackPieces.js';
+import { computeReserveVisibility, reserveColumnsOf } from './layout/computeReserveVisibility.js';
 
 const WHITE = new THREE.Color(1, 1, 1);
 const USED_STATES = new Set([UnitState.LAUNCHING, UnitState.RUNNING, UnitState.EATING, UnitState.RETURNED]);
@@ -41,6 +42,12 @@ const clearList = (list) => {
  * Styled look (StyledFactory, Fish of Fortune step 1): units are GLB fish (their animator runs on the presentation
  * clock) and the track is built from GLB pieces placed by layout/computeTrackPieces.js. The GLB meshes sit on
  * render.lighting.layer and render() draws them in a first pass under their own lights, then the rest as in v3.
+ * 2D step 2: with setBackgroundArt(true) the canvas is transparent over the DOM background art (the per-level flat
+ * colours are the fallback) and a translucent panel sits behind the board; setHudBand() keeps the design below a HUD
+ * band measured in design units, and screenFrame() tells the DOM layers where the design is. The reserve draws
+ * render.layout.reserveVisibleRows rows (layout/computeReserveVisibility.js). A unit is render.layout.unitSize in the
+ * reserve and in a slot; on the track it takes the factory's trackScale() (a fish fits the canal), changing size
+ * along its launch flight and return glide.
  *
  * Layout: a fixed portrait design (Config.render.layout) in design units, which are world units on the x/z plane.
  * computeLayout() (pure) gives every rect; the camera shows the whole design and never refits on a level change.
@@ -109,6 +116,21 @@ export class Renderer {
   #size = { width: 1, height: 1 };
   /** Screen pixels covered by DOM chrome (HUD bar); fitCamera keeps the board out of them. */
   #insets = { top: 0, bottom: 0 };
+  /** HUD band height in design units (setHudBand); when > 0 it sets insets.top from the fitted scale. */
+  #hudBand = 0;
+  /** Where the design is on screen (CSS px), for the DOM layers: see screenFrame(). */
+  #frame = null;
+  /** Background art drawn in the DOM beneath a transparent canvas (setBackgroundArt): no scene background then. */
+  #art = false;
+  /** Translucent panel behind the board (with the background art). */
+  #panel = null;
+  /** Reserve visibility (computeReserveVisibility) for the current inventory version: visible and entering ids. */
+  #reserveVisible = new Set();
+  #reserveEntering = new Set();
+  #reserveColumns = null;
+  /** Size factor of a unit on the track (factory.trackScale: a styled fish fits the canal) and the label floor. */
+  #trackScale = 1;
+  #labelMinRatio = 0;
   /** Styled factory: GLB models live on render.lighting.layer and are drawn in their own pass (see render()). */
   #modelPass = false;
   #modelLayer = 1;
@@ -141,11 +163,12 @@ export class Renderer {
 
   /** WebGLRenderer on `canvas`, scene with render.background, lights, camera. */
   init() {
-    this.gl = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true });
+    // alpha: with the background art the canvas is transparent over it; otherwise scene.background paints it opaque.
+    this.gl = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, alpha: true });
     this.gl.outputColorSpace = THREE.SRGBColorSpace;
     this.gl.info.autoReset = false; // render() resets it once per frame, so the stats cover both passes
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(this.config.render.background);
+    this.scene.background = this.#art ? null : new THREE.Color(this.config.render.background);
     this.#levelRoot = new THREE.Group();
     this.scene.add(this.#levelRoot);
     this.initLights();
@@ -213,6 +236,11 @@ export class Renderer {
     if (!this.camera) return;
     const { layout, camera: cam } = this.config.render;
     const { width, height } = this.#size;
+    if (this.#hudBand > 0) {
+      // The band is hudBand design units at the fitted scale, which itself depends on the room the band leaves.
+      const scale = Math.min(width / layout.designWidth, height / (layout.designHeight + this.#hudBand));
+      this.#insets = { top: this.#hudBand * scale, bottom: 0 };
+    }
     const usable = Math.max(1, height - this.#insets.top - this.#insets.bottom);
     const view = fitView(layout.designWidth, layout.designHeight, width / usable);
     const worldPerPx = view.h / usable;
@@ -226,23 +254,57 @@ export class Renderer {
     this.camera.position.set(cx, cam.height, cz);
     this.camera.lookAt(cx, 0, cz);
     this.camera.updateProjectionMatrix();
+    // The camera centre is the screen centre: design (0, 0) sits (cx, cz) world units up-left of it.
+    this.#frame = {
+      scale: 1 / worldPerPx,
+      width,
+      height,
+      hud: { x: 0, y: 0, w: width, h: this.#insets.top },
+      design: { x: width / 2 - cx / worldPerPx, y: height / 2 - cz / worldPerPx, w: layout.designWidth / worldPerPx, h: layout.designHeight / worldPerPx },
+    };
     if (this.#layout) this.#layout = { ...this.#layout, view };
   }
 
   /**
-   * Reserve screen pixels for DOM chrome (the HUD bar). main.js passes Config.ui.sizes.barHeight as top.
+   * Reserve screen pixels for DOM chrome (the flat v3 HUD bar: main.js passes Config.ui.sizes.barHeight as top).
    * @param {{ top?: number, bottom?: number }} insets
    */
   setViewportInsets({ top = 0, bottom = 0 } = {}) {
+    this.#hudBand = 0;
     this.#insets = { top, bottom };
     this.fitCamera();
+  }
+
+  /** Styled HUD: a band of `units` design units above the design, scaled with it (Config.ui.hud.band). */
+  setHudBand(units) {
+    this.#hudBand = units;
+    this.fitCamera();
+  }
+
+  /**
+   * Where things are on screen, in CSS px: scale (px per design unit), the HUD band and the design rect. The DOM
+   * layers (background art, styled HUD) are laid out from it after every resize.
+   * @returns {{ scale: number, width: number, height: number, hud: object, design: object } | null}
+   */
+  screenFrame() {
+    return this.#frame;
+  }
+
+  /**
+   * Background art in the DOM beneath the canvas (main.js, when the image loaded): the canvas stays transparent and a
+   * translucent panel (render.boardPanel) goes behind the board. false: the per-level flat colours, as in v3.
+   */
+  setBackgroundArt(active) {
+    this.#art = active;
+    if (this.scene) this.scene.background = active ? null : new THREE.Color(this.#style ? this.#style.background : this.config.render.background);
+    this.#signature = null; // rebuild the static layer (panel) on the next sync
   }
 
   /** computeLayout() for this level: board dims from the snapshot, constant parts from render.layout. */
   #layoutFor(snapshot) {
     const { width, height } = this.#size;
     const usable = Math.max(1, height - this.#insets.top - this.#insets.bottom);
-    const dims = { rows: snapshot.grid.rows, cols: snapshot.grid.cols, margin: snapshot.track.margin, reserveRows: snapshot.inventory.reserveRows };
+    const dims = { rows: snapshot.grid.rows, cols: snapshot.grid.cols, margin: snapshot.track.margin };
     const layoutConfig = { ...this.config.render.layout, slotCount: snapshot.slots.length, reserveCols: snapshot.inventory.reserveCols };
     return computeLayout(dims, layoutConfig, width / usable);
   }
@@ -387,12 +449,25 @@ export class Renderer {
     }
     if (snapshot.inventory.version !== this.#inventoryVersion) {
       this.buildInventory(snapshot);
+      this.#updateReserveVisibility(snapshot);
       this.#inventoryVersion = snapshot.inventory.version;
     }
     this.#syncUnits(snapshot, dt);
     this.#updateSlotCounter(snapshot, this.#clock);
     if (this.#trackGroup && this.#trackGroup.userData.animator) this.#trackGroup.userData.animator.update(dt);
     if (this.vfx) this.vfx.update(dt);
+  }
+
+  /**
+   * Which reserve units are drawn, once per inventory change (never per frame): the first reserveVisibleRows rows of
+   * each column; a unit that moved up into the last of them from below is entering (see #animateReserve).
+   */
+  #updateReserveVisibility({ units, inventory }) {
+    const columns = reserveColumnsOf(units, inventory.reserveCols, UnitState.RESERVE);
+    const { visible, entering } = computeReserveVisibility(columns, this.#layout.reserve.rows, this.#reserveColumns);
+    this.#reserveColumns = columns;
+    this.#reserveVisible = new Set(visible.map((unit) => unit.id));
+    this.#reserveEntering = new Set(entering.map((unit) => unit.id));
   }
 
   #signatureOf({ levelId, grid, track, slots, inventory }) {
@@ -419,14 +494,21 @@ export class Renderer {
     this.#signature = signature;
     this.#style = this.#styleFor(snapshot.levelId);
     this.factory.setStyle(this.#style);
-    this.scene.background.setHex(this.#style.background);
+    this.scene.background = this.#art ? null : new THREE.Color(this.#style.background);
     this.#layout = this.#layoutFor(snapshot);
     const layout = this.#layout;
     if (typeof this.factory.setLayout === 'function') this.factory.setLayout(layout);
-    if (layout.reserveOverflow) console.warn(`Level "${snapshot.levelId}" needs ${snapshot.inventory.reserveRows} reserve rows; render.layout fits ${layout.reserve.rows}`);
+    this.#trackScale = typeof this.factory.trackScale === 'function' ? this.factory.trackScale() : 1;
+    // A fish shrunk to fit the canal keeps its number at least layout.label.minHeight tall.
+    this.#labelMinRatio = layout.label.minHeight / (layout.label.fontScale * this.factory.unitWidth());
     this.#track = trackFromSnapshot(snapshot);
     const entry = this.#track.positionAt(0);
     this.#entry = { point: boardPoint(layout, entry.x, entry.y), dir: HEADING[entry.facing] };
+    if (this.#art) {
+      this.#panel = this.factory.boardPanel(layout.board);
+      if (this.#modelPass) this.#panel.layers.set(this.#modelLayer); // drawn before the canal, which blends over it
+      this.#levelRoot.add(this.#panel);
+    }
     this.buildTrack(snapshot.track);
     layout.slots.forEach((_, index) => {
       const mesh = this.factory.slot('free', index);
@@ -439,9 +521,10 @@ export class Renderer {
     this.#counterBase = { x: this.#slotCounter.scale.x, y: this.#slotCounter.scale.y };
     this.designToWorld(layout.counter.x, layout.counter.y, this.config.render.label.yOffset, this.#slotCounter.position);
     this.#levelRoot.add(this.#slotCounter);
-    // The whole reserve grid, on every level (plus any rows a level needs beyond it).
-    const rows = Math.max(layout.reserve.rows, snapshot.inventory.reserveRows);
-    for (let row = 0; row < rows; row += 1) {
+    // The visible reserve grid, the same on every level (deeper units are hidden, see #updateReserveVisibility).
+    this.#reserveColumns = null;
+    this.#updateReserveVisibility(snapshot);
+    for (let row = 0; row < layout.reserve.rows; row += 1) {
       for (let col = 0; col < layout.reserve.cols; col += 1) {
         const tile = this.factory.reserveTile();
         const { x, y } = reservePoint(layout, col, row);
@@ -494,6 +577,11 @@ export class Renderer {
         this.#removeUnit(unit.id, group); // same id, different level: rebuild in the new colour
         group = undefined;
       }
+      if (unit.state === UnitState.RESERVE && !this.#reserveVisible.has(unit.id)) {
+        // Deeper than the visible rows: not drawn, not picked, not animated (its reserve row still moves up).
+        if (group) group.visible = false;
+        continue;
+      }
       if (!group) {
         group = this.factory.unit(unit.color, unit.id);
         group.userData.color = unit.color;
@@ -510,12 +598,18 @@ export class Renderer {
         this.#levelRoot.add(group);
         this.#unitMeshes.set(unit.id, group);
       }
+      group.visible = true;
       group.userData.juice.deathAt = -1;
-      this.#applyLabel(group, unit, now);
       group.userData.pickAs = this.#pickTarget(unit, frontOnly);
       if (group.userData.pickAs) pickables.push(group);
       if (!group.userData.pose) group.userData.pose = newPose();
       const pose = this.#unitPose(unit, now, backs, group.userData.pose);
+      group.userData.size = pose.size;
+      if (pose.opacity !== group.userData.opacity) {
+        group.userData.opacity = pose.opacity;
+        this.factory.setUnitOpacity(group, pose.opacity);
+      }
+      this.#applyLabel(group, unit, now);
       this.designToWorld(pose.x, pose.y, unitHeight / 2 + (pose.air || 0) * hopHeight, group.position);
       this.#turn(group, pose.dir, dt);
       this.#applyJuice(group, now, false);
@@ -631,20 +725,23 @@ export class Renderer {
       ud.juice.swapAt = now;
     }
     const t = now - ud.juice.swapAt;
-    const base = ud.labelBase;
+    // The label is a child of the unit, so it follows the unit's size; a unit shrunk for the canal keeps it readable.
+    const size = ud.size || 1;
+    const base = (ud.labelBase * Math.max(size, this.#labelMinRatio)) / size;
+    const opacity = ud.opacity ?? 1;
     const out = ud.labelSpare;
     if (t < L.outMs) {
       const e = ease('easeOutQuad', t / L.outMs);
       const k = base * (1 + (L.outScale - 1) * e);
       out.visible = true;
-      out.material.opacity = 1 - e;
+      out.material.opacity = (1 - e) * opacity;
       out.scale.set(k, k, 1);
     } else if (out.visible) {
       out.visible = false;
     }
     const k = t < L.inMs ? base * (L.inFrom + (1 - L.inFrom) * ease('easeOutBack', t / L.inMs)) : base;
     ud.label.scale.set(k, k, 1);
-    ud.label.material.opacity = 1;
+    ud.label.material.opacity = opacity;
     if (t < L.flashMs) ud.label.material.color.copy(this.#labelFlash).lerp(WHITE, ease('easeInQuad', t / L.flashMs));
     else ud.label.material.color.copy(WHITE);
   }
@@ -676,7 +773,8 @@ export class Renderer {
         sz = death.stretch * f;
       }
     }
-    group.scale.set(sx, sy, sz);
+    const size = group.userData.size || 1;
+    group.scale.set(sx * size, sy * size, sz * size);
   }
 
   /** Raycast target for a unit: front reserve units launch, parked units relaunch from their slot, others none. */
@@ -720,10 +818,13 @@ export class Renderer {
       const { col, row } = unit.reservePos;
       let entry = this.#reserveAnim.get(unit.id);
       if (!entry || entry.col !== col || row > entry.target) {
-        entry = { col, y: row, from: row, target: row, startAt: now };
+        entry = { col, y: row, from: row, target: row, startAt: now, enter: false, fade: 1 };
         this.#reserveAnim.set(unit.id, entry);
       } else if (row < entry.target) {
-        entry.from = entry.y;
+        // Entering the last visible row from below: start just under it, faded out (it was hidden).
+        entry.enter = this.#reserveEntering.has(unit.id);
+        entry.from = entry.enter ? row + this.config.render.reserveEnterOffset : entry.y;
+        if (entry.enter) entry.fade = 0;
         entry.target = row;
         entry.startAt = null;
       }
@@ -746,9 +847,12 @@ export class Renderer {
     this.#reserveAnim.delete(id);
   };
 
-  /** One column, front to back: each unit starts a stagger after the one ahead and never closes in beyond a row. */
+  /**
+   * One column, front to back: each unit starts a stagger after the one ahead and never closes in beyond a row. A unit
+   * entering the last visible row moves its half cell in render.reserveEnterMs and fades in over the same time.
+   */
   #shiftColumn = (column, col) => {
-    const { reserveShiftMs, reserveShiftStaggerMs, motionEasing } = this.config.render;
+    const { reserveShiftMs, reserveShiftStaggerMs, reserveEnterMs, motionEasing } = this.config.render;
     const now = this.#resNow;
     column.sort(byTarget);
     let leaderStart = this.#departures.has(col) ? this.#departures.get(col) : -Infinity;
@@ -757,9 +861,15 @@ export class Renderer {
       const entry = column[i];
       if (entry.startAt === null) entry.startAt = Math.max(now, leaderStart + reserveShiftStaggerMs);
       if (entry.from > entry.target) {
-        const p = (now - entry.startAt) / (reserveShiftMs * (entry.from - entry.target));
-        entry.y = entry.from + (entry.target - entry.from) * ease(motionEasing, p);
-        if (p >= 1) entry.from = entry.target;
+        const p = (now - entry.startAt) / (entry.enter ? reserveEnterMs : reserveShiftMs * (entry.from - entry.target));
+        const e = ease(motionEasing, p);
+        entry.y = entry.from + (entry.target - entry.from) * e;
+        if (entry.enter) entry.fade = Math.min(1, Math.max(0, e));
+        if (p >= 1) {
+          entry.from = entry.target;
+          entry.enter = false;
+          entry.fade = 1;
+        }
         leaderStart = entry.startAt;
       }
       entry.y = Math.max(entry.y, leaderY + 1);
@@ -781,6 +891,9 @@ export class Renderer {
     const { motionEasing, launchLift, launchCurve, returnToSlotMs } = this.config.render;
     const layout = this.#layout;
     const { boardOrigin, cellSize } = layout;
+    const k = this.#trackScale;
+    out.size = 1;
+    out.opacity = 1;
     if (unit.pose) {
       const p = trackDrawPosition(unit, this.#track, this.#alpha, this.#trackPoint);
       out.x = boardOrigin.x + p.x * cellSize;
@@ -788,11 +901,14 @@ export class Renderer {
       out.dir.dx = HEADING[p.facing].dx;
       out.dir.dy = HEADING[p.facing].dy;
       out.air = 0;
+      out.size = k;
     } else if (unit.state === UnitState.LAUNCHING) {
       if (!motion.path) motion.path = launchPath(motion.from, this.#entry.point, this.#entry.dir, { lift: launchLift, curve: launchCurve });
       // Queue gaps are track distances (cells): on the board they are cellSize long.
       const back = (backs.get(unit.id) || 0) * cellSize;
-      flightPose(motion.path, flightProgress(unit, this.#launchSteps, this.#alpha), motionEasing, back, out);
+      const progress = flightProgress(unit, this.#launchSteps, this.#alpha);
+      flightPose(motion.path, progress, motionEasing, back, out);
+      out.size = 1 + (k - 1) * ease(motionEasing, progress); // shrinks to its track size on the way to the canal
     } else if (unit.state === UnitState.RETURNED && unit.slotIndex !== null) {
       const progress = returnToSlotMs > 0 ? (now - motion.since) / returnToSlotMs : 1;
       if (progress >= 1 && !motion.landed) {
@@ -803,6 +919,7 @@ export class Renderer {
       this.#slotPoint.x = slot.x + slot.w / 2;
       this.#slotPoint.y = slot.y + slot.h / 2;
       returnPose(motion.from, this.#slotPoint, progress, motionEasing, out);
+      out.size = motion.from ? k + (1 - k) * ease(motionEasing, Math.min(1, progress)) : 1; // grows back into its slot
     } else {
       const anim = this.#reserveAnim.get(unit.id);
       const row = anim ? anim.y : unit.reservePos.row;
@@ -812,6 +929,7 @@ export class Renderer {
       out.dir.dx = HEADING.N.dx;
       out.dir.dy = HEADING.N.dy;
       out.air = 0;
+      out.opacity = anim ? anim.fade : 1;
     }
     motion.last.x = out.x;
     motion.last.y = out.y;
@@ -862,13 +980,14 @@ export class Renderer {
   }
 
   /**
-   * Cosmetic reactions only: tint the background on LEVEL_WON / LEVEL_LOST, restore the level's own on LEVEL_LOADED.
+   * Cosmetic reactions only: tint the background on LEVEL_WON / LEVEL_LOST, restore the level's own on LEVEL_LOADED
+   * (the flat backgrounds only: the background art is not tinted).
    * @returns {() => void} unbind
    */
   bindEvents(eventBus) {
     const { endTint, background } = this.config.render;
     const tint = (hex) => () => {
-      if (this.scene) this.scene.background.setHex(hex);
+      if (this.scene && this.scene.background) this.scene.background.setHex(hex);
     };
     const offs = [
       eventBus.on(Events.LEVEL_WON, tint(endTint.won)),
@@ -956,6 +1075,11 @@ export class Renderer {
     if (this.#trackGroup && this.#trackGroup.userData.dispose) this.#trackGroup.userData.dispose();
     if (this.#slotCounter) this.factory.disposeLabel(this.#slotCounter);
     this.#slotCounter = null;
+    if (this.#panel) this.#panel.geometry.dispose();
+    this.#panel = null;
+    this.#reserveVisible.clear();
+    this.#reserveEntering.clear();
+    this.#reserveColumns = null;
     if (this.#debugGroup) this.#debugGroup.children.forEach((line) => line.geometry.dispose());
     this.#debugGroup = null;
     if (this.#levelRoot) this.#levelRoot.clear();

@@ -1,5 +1,7 @@
-// npm run process:ui -- runs tools/ui/process_ui.py (Python + Pillow) with the settings in tools/ui/ui_assets.json.
-// Extra arguments pass through: npm run process:ui -- --font-preview
+// npm run process:ui -- runs tools/ui/process_ui.py (Python + Pillow) with the settings in tools/ui/ui_assets.json:
+// the start screen, the gameplay background and the HUD sheet. Extra arguments pass through:
+//   npm run process:ui -- --only hud        (start | gameplay | hud)
+//   npm run process:ui -- --font-preview
 //   PYTHON  the Python executable with Pillow (default: the project venv tools/ui/.venv, else python3 / python)
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
