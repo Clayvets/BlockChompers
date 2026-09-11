@@ -14,6 +14,7 @@ describe('ProgressManager (pure money and level progression)', () => {
       levelNumber: 1,
       levelId: SINGLE_LANE_LEVEL.id,
       levelCount: 3,
+      isLastLevel: false,
       money: startingMoney,
       reward: rewardPerLevel,
       completed: false,
@@ -41,14 +42,16 @@ describe('ProgressManager (pure money and level progression)', () => {
     expect(progress.completeLevel()).toEqual({ ok: true, reward: rewardPerLevel, money: startingMoney + 2 * rewardPerLevel });
   });
 
-  it('loops the level content after the last level while the level number keeps counting', () => {
+  it('wraps back to Level 1 after the last level while money keeps accumulating', () => {
     const progress = make([SINGLE_LANE_LEVEL, TWO_SINGLES_LEVEL]);
-    for (let i = 0; i < 2; i += 1) {
-      progress.completeLevel();
-      progress.advance();
-    }
-    expect(progress.getState()).toMatchObject({ levelNumber: 3, levelId: SINGLE_LANE_LEVEL.id, money: startingMoney + 2 * rewardPerLevel });
-    expect(progress.nextLevel()).toBe(TWO_SINGLES_LEVEL);
+    progress.completeLevel();
+    progress.advance();
+    expect(progress.getState()).toMatchObject({ levelNumber: 2, isLastLevel: true });
+    expect(progress.nextLevel()).toBe(SINGLE_LANE_LEVEL);
+    progress.completeLevel();
+    expect(progress.advance()).toEqual({ ok: true, level: SINGLE_LANE_LEVEL, levelNumber: 1 });
+    expect(progress.getState()).toMatchObject({ levelNumber: 1, levelId: SINGLE_LANE_LEVEL.id, isLastLevel: false, completed: false, money: startingMoney + 2 * rewardPerLevel });
+    expect(progress.completeLevel()).toMatchObject({ ok: true }); // a new visit of Level 1 pays again
   });
 
   it('has no level and cannot advance without a level list', () => {

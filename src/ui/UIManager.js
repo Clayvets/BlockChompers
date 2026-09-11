@@ -94,11 +94,15 @@ export class UIManager {
     if (this.#changed('playing', playing)) settingsButton.disabled = !playing;
   }
 
-  /** Win card: title and a Continue button showing the reward from the progression state. */
+  /**
+   * Win card: title and an action showing the reward from the progression state. On the last level of the cycle the
+   * action reads "Play again" (the same command then loads Level 1).
+   */
   showWin() {
     const { text } = this.config.ui;
-    const { reward } = this.gameManager.getSnapshot().progress;
-    this.#showResult('won', text.won, `${text.continue} +${text.currency}${reward}`);
+    const { reward, isLastLevel } = this.gameManager.getSnapshot().progress;
+    const action = isLastLevel ? text.playAgain : text.continue;
+    this.#showResult('won', text.won, `${action} +${text.currency}${reward}`);
   }
 
   /** Lose card, the same for every loss reason. */

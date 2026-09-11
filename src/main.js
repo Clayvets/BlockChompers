@@ -2,7 +2,8 @@ import { Config } from './config/Config.js';
 import { createGame } from './core/createGame.js';
 import { Events } from './core/Events.js';
 import { GamePhase } from './core/GameManager.js';
-import { levels } from './core/levels/index.js';
+import { levels, levelLibrary } from './core/levels/index.js';
+import { pickDebugLevel } from './debug/levelParam.js';
 import { Renderer } from './render/Renderer.js';
 import { InputManager } from './input/InputManager.js';
 import { UIManager } from './ui/UIManager.js';
@@ -11,7 +12,10 @@ import { UIManager } from './ui/UIManager.js';
 const canvas = document.querySelector('#canvas-game');
 const uiRoot = document.querySelector('#ui-root');
 
-const { game, eventBus, config } = createGame({ config: Config, levels });
+// Debug level select: ?level=<id> plays that level on its own (see Config.debug.levelParam).
+const debug = pickDebugLevel(window.location.search, levelLibrary, Config.debug.levelParam);
+if (debug.id && !debug.level) console.warn(`Unknown level "${debug.id}"; known: ${Object.keys(levelLibrary).join(', ')}`);
+const { game, eventBus, config } = createGame({ config: Config, levels: debug.level ? [debug.level] : levels });
 
 const renderer = new Renderer({ canvas, config });
 const input = new InputManager({ canvas, renderer, gameManager: game });

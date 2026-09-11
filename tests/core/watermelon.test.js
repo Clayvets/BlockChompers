@@ -67,6 +67,6 @@ describe('level: watermelon', () => {
 
   it('is the first level of the progression', async () => {
     const { levels } = await import('../../src/core/levels/index.js');
-    expect(levels.map((l) => l.id)).toEqual(['watermelon', 'starter']);
+    expect(levels.map((l) => l.id)).toEqual(['watermelon', 'panda', 'carrot']);
   });
 });

@@ -32,3 +32,90 @@ Tests:
 
 Keep npm test green and the build clean. Update the README v1 values table with the new Config keys. Report the root cause of bug 1 and propose a commit message.
 
+=== 2026-09-11T00:38:51-05:00 | session 567fdf5c ===
+Task: set the game progression to exactly 3 levels, add 2 new pixel-art levels, and loop back to Level 1 after the last win. Keep src/core pure and deterministic, and put every new value in Config.js.
+
+1) Progression: Level 1 = the current first level, Level 2 = "Panda", Level 3 = "Carrot". Remove the other levels (including Watermelon) from the progression, but keep their files so the debug level select can still load them.
+
+2) Level matrices: I extracted these from the reference images by sampling each grid cell (white cells = cells enclosed by the outline). Compare them against assets/reference/panda.jpeg and assets/reference/carrot.png and report any mismatch before writing the levels. Row 0 = top, 0 = empty.
+
+Panda: 24 rows × 22 cols. 1 = black, 2 = white, 3 = green. Blocks: 236 black, 158 white, 26 green.
+[0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,1,1,1,0,0,0,0]
+[0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0]
+[0,1,1,1,1,1,2,2,2,2,2,2,2,2,2,1,1,1,1,1,0,0]
+[0,1,1,1,1,2,2,2,2,2,2,2,2,2,2,2,1,1,1,1,0,0]
+[0,1,1,1,2,2,2,2,2,2,2,2,2,2,2,2,2,1,1,1,0,0]
+[0,0,1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,0,0,0]
+[0,0,1,2,2,2,1,1,1,2,2,2,2,2,1,1,2,2,1,0,0,0]
+[0,0,1,2,2,1,1,1,1,2,2,2,2,1,1,1,1,2,1,0,0,0]
+[0,0,1,2,2,1,1,2,1,2,2,2,2,1,2,1,1,2,1,0,0,0]
+[0,0,1,2,2,1,1,1,1,2,1,1,2,1,1,1,1,2,1,0,0,0]
+[0,0,1,2,2,2,1,1,2,2,2,1,2,2,1,1,2,1,3,0,0,0]
+[0,0,0,1,2,2,2,2,2,2,1,1,1,2,2,2,1,1,3,0,3,3]
+[0,0,0,0,1,2,2,2,2,2,2,2,2,2,2,1,1,2,3,3,3,0]
+[0,0,0,0,1,1,1,2,2,2,2,2,2,2,1,3,3,3,3,0,0,0]
+[0,0,0,1,1,1,1,1,1,1,1,1,1,1,3,3,3,1,2,3,3,0]
+[0,0,0,1,1,1,1,1,1,2,2,2,1,3,3,1,1,1,1,0,0,3]
+[0,0,1,2,2,1,1,1,1,1,1,1,3,3,1,1,1,1,1,0,0,0]
+[0,0,1,2,2,2,1,1,1,1,1,1,3,2,2,1,1,1,0,0,0,0]
+[0,1,1,1,1,2,2,1,1,1,1,1,2,2,2,2,1,1,1,1,0,0]
+[1,1,1,1,1,1,2,2,2,3,3,2,2,2,2,1,1,1,1,1,1,0]
+[1,1,1,1,1,1,1,2,3,3,2,2,2,2,2,1,1,1,1,1,1,0]
+[1,1,1,1,1,1,1,2,2,2,2,2,2,2,1,1,1,1,1,1,1,0]
+[0,1,1,1,1,1,1,2,2,2,2,2,2,1,1,1,1,1,1,1,0,0]
+[0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0]
+
+Carrot: 39 rows × 23 cols. 1 = black, 2 = leaf green, 3 = orange, 4 = dark orange, 5 = white, 6 = pink. Blocks: 236 black, 77 green, 201 orange, 11 dark orange, 99 white, 8 pink.
+[0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0]
+[0,0,0,0,0,0,0,0,0,0,0,1,2,2,2,2,1,0,0,0,0,0,0]
+[0,0,0,0,0,0,0,1,1,1,0,1,2,2,2,2,2,1,0,0,0,0,0]
+[0,0,0,0,0,0,1,1,2,2,1,2,2,2,2,2,2,1,0,0,0,0,0]
+[0,0,0,0,0,0,1,2,2,2,1,2,2,2,2,2,2,1,0,0,0,0,0]
+[0,0,0,0,0,0,1,2,2,2,1,2,2,2,2,2,2,1,0,0,0,0,0]
+[0,0,0,0,0,0,1,2,2,2,1,2,2,2,2,2,2,1,0,0,0,0,0]
+[0,0,0,0,0,0,1,2,2,2,1,2,2,2,2,2,2,1,0,0,0,0,0]
+[0,0,0,0,0,0,1,2,2,2,1,2,2,2,2,2,1,0,0,0,0,0,0]
+[0,0,0,0,0,0,0,1,2,2,2,1,2,2,2,2,1,0,0,0,0,0,0]
+[0,0,0,0,0,0,0,1,2,2,2,1,2,2,2,1,1,0,0,0,0,0,0]
+[0,0,0,0,0,0,0,0,1,1,2,1,2,1,1,1,0,0,0,0,0,0,0]
+[0,1,1,1,1,0,0,0,0,0,1,1,2,1,0,0,0,0,1,1,1,1,0]
+[1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1]
+[1,1,1,1,1,1,1,1,3,3,3,3,3,3,3,1,1,1,1,1,1,1,1]
+[1,1,1,1,1,1,1,3,3,3,3,3,3,3,3,3,1,1,1,1,1,1,1]
+[1,1,1,1,1,1,1,3,1,1,1,1,1,1,1,3,1,1,1,1,1,1,1]
+[0,1,1,1,1,1,1,1,5,5,5,5,5,5,5,1,1,1,1,1,1,1,0]
+[0,0,1,1,1,1,1,5,5,5,5,5,5,5,5,5,1,1,1,1,1,0,0]
+[0,1,3,1,1,1,5,5,5,5,5,5,5,5,5,5,5,1,1,1,3,1,0]
+[0,1,3,3,3,1,5,5,5,5,5,5,5,5,5,5,5,1,3,3,3,1,0]
+[1,3,3,3,3,1,5,5,5,5,5,5,5,5,5,5,5,1,3,3,3,3,1]
+[1,3,3,3,1,5,5,5,5,5,5,5,5,5,5,5,5,5,1,3,3,3,1]
+[1,3,3,3,1,5,5,5,5,1,5,5,5,1,5,5,5,5,1,3,3,3,1]
+[1,3,3,3,1,5,6,6,5,1,5,1,5,1,5,6,6,5,1,3,3,3,1]
+[1,3,3,3,1,5,6,6,5,5,5,5,5,5,5,6,6,5,1,3,3,3,1]
+[1,3,3,3,3,1,5,5,5,5,5,5,5,5,5,5,5,1,3,3,3,3,1]
+[1,3,3,3,3,3,1,1,1,1,1,1,1,1,1,1,1,3,3,3,3,3,1]
+[0,1,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,1,0]
+[0,1,1,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,1,1,0]
+[0,0,1,4,4,4,4,4,4,3,3,3,3,3,3,3,3,3,3,3,1,0,0]
+[0,0,1,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,1,0,0]
+[0,0,0,1,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,1,0,0,0]
+[0,0,0,1,4,4,4,4,4,3,3,3,3,3,3,3,3,3,3,1,0,0,0]
+[0,0,0,0,1,1,3,3,3,3,3,3,3,3,3,3,3,1,1,0,0,0,0]
+[0,0,0,0,0,1,3,3,3,3,3,3,3,3,3,3,3,1,0,0,0,0,0]
+[0,0,0,0,0,0,1,3,3,3,3,3,3,3,3,3,1,0,0,0,0,0,0]
+[0,0,0,0,0,0,0,1,1,3,3,3,3,3,1,1,0,0,0,0,0,0,0]
+[0,0,0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0,0,0,0]
+
+3) Palettes and readability: palettes live in render config keyed by level id (same pattern as Watermelon); core level files only store color indices.
+Panda: 1 #0A0A0A, 2 #FFFFFF, 3 #2C6B1A.
+Carrot: 1 #0A0A0A, 2 #8EC7A2, 3 #F48D72, 4 #EA7352, 5 #FFFFFF, 6 #F4C6DF.
+Black and white blocks must both stay readable: use a mid-tone scene background such as #9CC3D5 for both levels, and adjust the empty-cell tile color if contrast is poor.
+These grids are much larger than the other levels. Check that they fit the screen in portrait and that blocks, units and capacity labels (up to 3 digits) stay readable and clickable. If they don't, report it instead of shrinking the art.
+
+4) Reserve: for each level, design a reserve whose total capacity per color matches the block counts exactly, as the existing validation requires. Keep it compact by using higher capacities instead of more units, so the reserve fits on screen. Order the units so the level is winnable, keeping in mind that the black outline blocks the inner colors.
+
+5) Final win: when Level 3 is won, show the same win overlay but replace "Continue +$X" with "Play again +$X". Clicking it adds the Level 3 reward, keeps the accumulated money and loads Level 1, so the whole cycle repeats. The core progression module exposes whether the current level is the last one through getState(); UIManager only picks the button label and sends the command.
+
+Tests: headless WIN runs for Panda and Carrot with scripted launch orders; both levels pass validation; the progression order is Level 1 → Panda → Carrot; winning Level 3 adds the reward exactly once and loads Level 1; a second cycle works. Keep npm test green and the build clean.
+Update the README v1 section (levels list and new Config keys). Report the reserves you chose, any mismatch you found, and a proposed commit message.
+

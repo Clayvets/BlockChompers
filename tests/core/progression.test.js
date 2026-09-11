@@ -25,7 +25,7 @@ describe('money and progression through GameManager commands', () => {
     const snapshot = game.getSnapshot();
     expect(snapshot.paused).toBe(false);
     expect(snapshot.progress).toEqual({
-      levelNumber: 1, levelId: SINGLE_LANE_LEVEL.id, levelCount: 2, money: START, reward: REWARD, completed: false, version: 0,
+      levelNumber: 1, levelId: SINGLE_LANE_LEVEL.id, levelCount: 2, isLastLevel: false, money: START, reward: REWARD, completed: false, version: 0,
     });
   });
 
@@ -55,7 +55,7 @@ describe('money and progression through GameManager commands', () => {
     expect(game.getSnapshot().progress.money).toBe(START + REWARD);
     expect(playOut(game)).toBe(GamePhase.WON); // level 2
     game.continueToNextLevel();
-    expect(game.getSnapshot().progress).toMatchObject({ levelNumber: 3, money: START + 2 * REWARD });
+    expect(game.getSnapshot().progress).toMatchObject({ levelNumber: 1, money: START + 2 * REWARD });
   });
 
   it('Retry after a loss pays nothing and replays the same level', () => {
@@ -80,21 +80,22 @@ describe('money and progression through GameManager commands', () => {
     expect(game.getSnapshot().progress).toMatchObject({ levelNumber: 2, money: START + REWARD });
   });
 
-  it('after the last level the content starts again from the first one as the next number', () => {
+  it('after the last level the cycle starts again at Level 1', () => {
     const { game } = createTestGame({ levels: [SINGLE_LANE_LEVEL, TWO_SINGLES_LEVEL] });
     for (let i = 0; i < 2; i += 1) {
       expect(playOut(game)).toBe(GamePhase.WON);
       game.continueToNextLevel();
     }
     expect(game.level).toBe(SINGLE_LANE_LEVEL);
-    expect(game.getSnapshot().progress).toMatchObject({ levelNumber: 3, levelId: SINGLE_LANE_LEVEL.id, money: START + 2 * REWARD });
+    expect(game.getSnapshot().progress).toMatchObject({ levelNumber: 1, levelId: SINGLE_LANE_LEVEL.id, isLastLevel: false, money: START + 2 * REWARD });
   });
 
-  it('with a single level, Continue replays it as the next level number', () => {
+  it('with a single level, every win is the last one and Continue replays Level 1', () => {
     const { game } = createTestGame({ level: SINGLE_LANE_LEVEL });
     playOut(game);
-    expect(game.continueToNextLevel()).toMatchObject({ ok: true, levelNumber: 2 });
-    expect(game.getSnapshot()).toMatchObject({ phase: GamePhase.PLAYING, progress: { levelNumber: 2, levelId: SINGLE_LANE_LEVEL.id } });
+    expect(game.getSnapshot().progress.isLastLevel).toBe(true);
+    expect(game.continueToNextLevel()).toMatchObject({ ok: true, levelNumber: 1 });
+    expect(game.getSnapshot()).toMatchObject({ phase: GamePhase.PLAYING, progress: { levelNumber: 1, levelId: SINGLE_LANE_LEVEL.id } });
   });
 
   it('throws before paying when the next level is invalid', () => {

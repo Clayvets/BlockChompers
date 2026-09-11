@@ -150,6 +150,15 @@ export class PrimitiveFactory {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.lineJoin = 'round';
+    // Squeeze wide text (e.g. 3-digit capacities) horizontally so it fits instead of being clipped.
+    const room = canvas.width - (style.outlineWidth || 0);
+    const width = ctx.measureText(text).width;
+    ctx.save();
+    if (width > room) {
+      ctx.translate(cx, 0);
+      ctx.scale(room / width, 1);
+      ctx.translate(-cx, 0);
+    }
     if (style.outlineWidth > 0) {
       ctx.lineWidth = style.outlineWidth;
       ctx.strokeStyle = style.outline;
@@ -157,6 +166,7 @@ export class PrimitiveFactory {
     }
     ctx.fillStyle = style.color;
     ctx.fillText(text, cx, cy);
+    ctx.restore();
     sprite.material.map.needsUpdate = true;
     sprite.userData.text = text;
   }

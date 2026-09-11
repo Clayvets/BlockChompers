@@ -181,6 +181,20 @@ export const Config = Object.freeze({
         track: Object.freeze({ guideColor: 0x5f97b3, entryColor: 0x467d99 }),
         inventory: Object.freeze({ tileColor: 0x5f97b3 }),
       }),
+      /** Mid-tone background so both black and white blocks read; darker tiles keep black (~5.2:1) and white (~4:1)
+       *  units readable on empty ring and reserve cells. */
+      panda: Object.freeze({
+        background: 0x9cc3d5,
+        palette: Object.freeze({ 1: 0x0a0a0a, 2: 0xffffff, 3: 0x2c6b1a }),
+        track: Object.freeze({ guideColor: 0x4d86a3, entryColor: 0x3a6e88 }),
+        inventory: Object.freeze({ tileColor: 0x4d86a3 }),
+      }),
+      carrot: Object.freeze({
+        background: 0x9cc3d5,
+        palette: Object.freeze({ 1: 0x0a0a0a, 2: 0x8ec7a2, 3: 0xf48d72, 4: 0xea7352, 5: 0xffffff, 6: 0xf4c6df }),
+        track: Object.freeze({ guideColor: 0x4d86a3, entryColor: 0x3a6e88 }),
+        inventory: Object.freeze({ tileColor: 0x4d86a3 }),
+      }),
     }),
   }),
 
@@ -195,6 +209,8 @@ export const Config = Object.freeze({
       restartLevel: 'Restart level',
       won: 'Congratulations!',
       continue: 'Continue',
+      /** Replaces Continue on the last level of the cycle (the next level is Level 1 again). */
+      playAgain: 'Play again',
       lost: 'Out of space',
       retry: 'Retry',
     }),
@@ -235,7 +251,11 @@ export const Config = Object.freeze({
     disabledOpacity: 0.35,
   }),
 
-  debug: Object.freeze({ logEvents: false }),
+  debug: Object.freeze({
+    logEvents: false,
+    /** Debug level select: ?level=<id> loads any level from levelLibrary on its own, outside the progression. '' = off. */
+    levelParam: 'level',
+  }),
 });
 
 function isPlainObject(value) {
