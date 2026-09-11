@@ -4,7 +4,7 @@ const CORNER_BY_SIGN = { '-1,-1': Corner.NW, '1,-1': Corner.NE, '1,1': Corner.SE
 
 function outwardOf(side) {
   const { dr, dc } = INWARD[side];
-  return { dx: -dc, dy: -dr };
+  return { dx: 0 - dc, dy: 0 - dr }; // 0 - x avoids a negative zero
 }
 
 function facingOf(dx, dy) {

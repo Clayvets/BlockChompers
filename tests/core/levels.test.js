@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { levels } from '../../src/core/levels/index.js';
 import { GridManager } from '../../src/core/GridManager.js';
+import { Config } from '../../src/config/Config.js';
+import { createTestGame } from '../helpers/createTestGame.js';
 
 describe('shipped levels', () => {
   it('every level has an id, a grid and a unit list', () => {
@@ -12,7 +14,21 @@ describe('shipped levels', () => {
     }
   });
 
-  it.todo('every level passes GridManager.validate');
-  it.todo('no level starts already cleared');
-  it.todo('every colour on the grid has at least one unit in the reserve (warning otherwise)');
+  it('every level passes GridManager.validate', () => {
+    for (const level of levels) {
+      expect(GridManager.validate(level.grid, { emptyValue: Config.grid.emptyValue })).toEqual({ ok: true, errors: [], warnings: [] });
+    }
+  });
+
+  it('every level loads into PLAYING and does not start already cleared', () => {
+    for (const level of levels) {
+      const { game } = createTestGame({ level });
+      expect(game.phase).toBe('playing');
+      expect(game.getSnapshot().grid.remaining).toBeGreaterThan(0);
+    }
+  });
+
+  it('every grid colour has a unit and every unit colour has blocks (no levelWarnings)', () => {
+    for (const level of levels) expect(createTestGame({ level }).game.levelWarnings).toEqual([]);
+  });
 });
