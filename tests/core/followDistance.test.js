@@ -42,12 +42,12 @@ describe('follow distance (track.launchSpacing)', () => {
     expect(min).toBeGreaterThanOrEqual(Config.track.launchSpacing - 1e-9);
   });
 
-  it('launchSpacing 0 keeps pass-through: units launched together share the lane in slot order', () => {
+  it('launchSpacing 0 keeps pass-through: units launched together share the lane in launch order', () => {
     const { game } = createTestGame({ level: CONTENTION_LEVEL }); // test base: launchSpacing 0
     game.activateUnit('u0');
     game.activateUnit('u1');
     game.step();
-    expect(unit(game, 'u0').state).toBe(UnitState.DEAD); // slot 0 ate (0,0) first
+    expect(unit(game, 'u0').state).toBe(UnitState.DEAD); // launched first, ate (0,0) first
     expect(unit(game, 'u1')).toMatchObject({ distanceTraveled: 1, capacity: 1 });
   });
 });

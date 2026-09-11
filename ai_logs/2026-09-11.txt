@@ -155,3 +155,51 @@ Also include:
 
 Keep it concise, write in English only, and don't change any code. Report what you wrote and propose a commit message.
 
+=== 2026-09-11T01:48:39-05:00 | session 567fdf5c ===
+Task: v2 – Feel. Apply 4 feel changes on top of the v1-primitive tag. Keep src/core pure and deterministic, put every tuned value in Config.js, and record the value before and after each change for the README.
+
+1) Launch straight to the track: tapping a reserve unit sends it directly to the track entry; it no longer stops at a slot first. Slots only receive units that finish a lap with capacity left.
+- The 5-slot limit still applies. A launch is allowed only if (units moving + units parked) < inventory.activeSlots.
+- The "N/5" counter becomes activeSlots − (units moving + units parked). It still drops by 1 on each launch.
+- A unit that finishes a lap with capacity takes the leftmost FREE slot and parks. The limit guarantees one is free.
+- A relaunched parked unit leaves its slot, which becomes FREE, but it still counts as moving.
+- The lose rules (rules.loseMode) behave as before.
+- Update the Unit state machine, InventoryManager and their tests. LAUNCHING now means "reserve → track entry".
+
+2) Faster track: raise units.speedCellsPerSec about 40% as a starting point, then tune until the loop no longer feels slow.
+- Lane-crossing detection must still never skip a lane at the new speed.
+- Shorten render.projectileTravelMs if shots start to lag behind units.
+
+3) Glide instead of stiff movement:
+- React on pointerdown, not click, so the unit starts moving in the same frame as the tap.
+- The launch follows a smooth curve from the reserve cell to the track entry, with ease-out and a short duration (timing.launchToEntryMs plus an easing key).
+- On entering the track, the unit accelerates from the launch speed to cruise speed over units.accelMs instead of snapping to full speed. This is logic, deterministic and tested.
+- The return to a slot, the relaunch and the reserve shift use the same easing style.
+- The triangle turns smoothly to face its direction of travel, including at corners (render.rotationDamping). The logical path doesn't change.
+- Put every easing name, duration and damping value in Config.
+
+4) Final rush: when the reserve is empty (no more units to add), all moving units speed up to finish the board.
+- rules.finalRushSpeedMultiplier: start at 1.8.
+- rules.finalRushRampMs: ramp up with easing, no instant jump.
+- It applies to units already on the track and to any unit relaunched afterwards.
+- It starts once, emits FINAL_RUSH_STARTED and is part of the deterministic simulation.
+
+Tests:
+- A launch goes straight to the track without occupying a slot, and it's rejected when moving + parked = 5.
+- The counter matches the new formula.
+- A returning unit takes the leftmost FREE slot.
+- Acceleration reaches cruise speed at units.accelMs.
+- No lane is skipped at cruise speed or at final-rush speed.
+- The final rush starts exactly once when the reserve empties, and never before.
+- Identical command scripts still produce deep-equal snapshots.
+- The existing WIN and LOSE tests still pass.
+Keep npm test green and the build clean.
+
+README: fill the "v2 – Feel" section with 3 subsections:
+- what changed;
+- why each change improves feel (responsiveness, flow, pacing, end-of-level tension);
+- exact values tuned, as a table with the columns Config key | v1 value | v2 value | Why.
+Don't change the v1 section.
+
+Report the final tuned values and propose a commit message.
+

@@ -2,19 +2,17 @@ import * as THREE from 'three';
 import { PrimitiveFactory } from './PrimitiveFactory.js';
 import { Events } from '../core/Events.js';
 import { UnitState } from '../core/Unit.js';
-import { countFreeSlots } from '../core/InventoryManager.js';
+import { countAvailableSlots } from '../core/InventoryManager.js';
+import { ease } from '../core/easing.js';
 import { trackDrawPosition, trackFromSnapshot } from './trackPlacement.js';
-
-/** facing -> heading on the cell plane (x right, y down). */
-const HEADING = Object.freeze({ N: [0, -1], E: [1, 0], S: [0, 1], W: [-1, 0] });
-const IN_SLOT = new Set([UnitState.ACTIVE, UnitState.RETURNED]);
+import { HEADING, launchPath, flightProgress, flightPose, entryQueueBacks, returnPose } from './launchPlacement.js';
 
 /**
  * The Three.js bridge. Reads snapshots, owns the scene graph, never mutates game state.
  *
  *   sync(snapshot)  -- structure: static layer (track guide, slots, reserve tiles, camera) rebuilt when the
  *                      level's shape changes, blocks diffed on grid.version, slot tints on inventory.version,
- *                      units re-posed every frame
+ *                      units re-posed every frame (flight curve, entry queue, return glide, reserve shift, turning)
  *   bindEvents(bus) -- effects only (end-of-level background tint)
  *
  * All layout is computed in CELL units (x right, y down, origin = grid top-left) and converted once in
@@ -45,8 +43,18 @@ export class Renderer {
   /** snapshot.stepAlpha of the frame being drawn. */
   #alpha = 0;
   #pickables = [];
-  /** Reserve shift animation state per unit id: { col, y (drawn row), target, startAt }. */
+  /** Reserve shift animation state per unit id: { col, y (drawn row), from, target, startAt }. */
   #reserveAnim = new Map();
+  /** Reserve column -> time (ms) its front unit last left; the shift behind it starts a stagger later. */
+  #departures = new Map();
+  /** Per-unit motion memory (see #motionFor): flight start and path, return start, last drawn point. */
+  #motion = new Map();
+  /** Track entry point and heading (cell units), where every launch flight ends. */
+  #entry = null;
+  /** snapshot.launchSteps: whole steps of a launch flight. */
+  #launchSteps = 0;
+  /** Text currently on the "N/5" sprite. */
+  #counterText = null;
   #animClock = null;
   #size = { width: 1, height: 1 };
   /** Screen pixels covered by DOM chrome (HUD bar); fitCamera keeps the board out of them. */
@@ -223,14 +231,16 @@ export class Renderer {
       const mesh = this.#slotMeshes[slot.index];
       if (mesh) mesh.material = this.factory.slotMaterial(slot.status);
     }
-    this.#setSlotCounter(snapshot.slots);
   }
 
-  /** "N/total" from a slot list: N = FREE slots (moving and parked units both hold theirs). */
-  #setSlotCounter(slots) {
+  /** "N/total" every frame: N = activeSlots - (units moving + units parked); moving units hold no slot. */
+  #updateSlotCounter({ units, slots }) {
     if (!this.#slotCounter) return;
-    const { free, total } = countFreeSlots(slots);
-    this.factory.setText(this.#slotCounter, `${free}/${total}`);
+    const { free, total } = countAvailableSlots(units, slots.length);
+    const text = `${free}/${total}`;
+    if (text === this.#counterText) return;
+    this.#counterText = text;
+    this.factory.setText(this.#slotCounter, text);
   }
 
   /** Per-frame sync from a snapshot. Safe to call before a level is loaded. */
@@ -239,6 +249,7 @@ export class Renderer {
     const signature = this.#signatureOf(snapshot);
     if (signature !== this.#signature) this.#rebuildStatic(snapshot, signature);
     this.#alpha = snapshot.stepAlpha || 0;
+    this.#launchSteps = snapshot.launchSteps || 0;
     if (snapshot.grid.version !== this.#gridVersion) {
       this.buildGridFromState(snapshot.grid);
       this.#gridVersion = snapshot.grid.version;
@@ -248,6 +259,7 @@ export class Renderer {
       this.#inventoryVersion = snapshot.inventory.version;
     }
     this.#syncUnits(snapshot);
+    this.#updateSlotCounter(snapshot);
   }
 
   #signatureOf({ levelId, grid, track, slots, inventory }) {
@@ -277,6 +289,8 @@ export class Renderer {
     this.scene.background.setHex(this.#style.background);
     this.#layout = this.#computeLayout(snapshot);
     this.#track = trackFromSnapshot(snapshot);
+    const entry = this.#track.positionAt(0);
+    this.#entry = { point: { x: entry.x, y: entry.y }, dir: HEADING[entry.facing] };
     this.buildTrack(snapshot.track);
     for (let index = 0; index < snapshot.slots.length; index += 1) {
       const mesh = this.factory.slot('free', index);
@@ -300,12 +314,14 @@ export class Renderer {
     this.fitCamera();
   }
 
-  #syncUnits({ units, slots }) {
+  #syncUnits(snapshot) {
+    const { units, slots } = snapshot;
     const { unitHeight, label } = this.config.render;
     const now = performance.now();
     const dt = this.#animClock === null ? 0 : now - this.#animClock;
     this.#animClock = now;
-    this.#animateReserve(units, now, dt);
+    this.#animateReserve(units, now);
+    const backs = entryQueueBacks(units, this.config.track.launchSpacing, this.#alpha);
     const frontOnly = this.config.inventory.frontOnlyPick;
     const pickables = slots.filter((s) => s.status === 'blocked').map((s) => this.#slotMeshes[s.index]).filter(Boolean);
     const alive = new Set();
@@ -330,14 +346,14 @@ export class Renderer {
       this.factory.setLabel(group.userData.label, String(unit.capacity));
       group.userData.pickAs = this.#pickTarget(unit, frontOnly);
       if (group.userData.pickAs) pickables.push(group);
-      const { x, y, facing } = this.#unitCellPose(unit);
-      const [dx, dy] = HEADING[facing];
-      this.cellToWorld(x, y, unitHeight / 2, group.position);
-      group.rotation.y = Math.atan2(-dy, dx);
+      const pose = this.#unitPose(unit, now, backs);
+      this.cellToWorld(pose.x, pose.y, unitHeight / 2 + (pose.air || 0) * this.config.render.hopHeight, group.position);
+      this.#turn(group, pose.dir, dt);
     }
     for (const [id, group] of this.#unitMeshes) {
       if (!alive.has(id)) this.#removeUnit(id, group);
     }
+    for (const id of this.#motion.keys()) if (!alive.has(id)) this.#motion.delete(id);
     this.#pickables = pickables;
   }
 
@@ -349,13 +365,29 @@ export class Renderer {
   }
 
   /**
-   * Reserve shift animation (presentation only: the logic already moved the units). Per column, front to back, a
-   * unit whose row moved up starts render.reserveShiftStaggerMs after the unit ahead, glides one row per
-   * render.reserveShiftMs, and is never drawn closer than one row to the unit ahead, so meshes never overlap.
-   * A unit whose row moved back (level restart) snaps.
+   * Turn a unit toward `dir` (cell plane) the short way round with exponential damping (render.rotationDamping per
+   * second), so it swings smoothly through corners and launch curves. Snaps on the unit's first frame.
    */
-  #animateReserve(units, now, dt) {
-    const { reserveShiftMs, reserveShiftStaggerMs } = this.config.render;
+  #turn(group, dir, dtMs) {
+    const target = Math.atan2(-dir.dy, dir.dx);
+    const data = group.userData;
+    if (data.heading === undefined) {
+      data.heading = target;
+    } else {
+      const delta = Math.atan2(Math.sin(target - data.heading), Math.cos(target - data.heading));
+      data.heading += delta * (1 - Math.exp((-this.config.render.rotationDamping * dtMs) / 1000));
+    }
+    group.rotation.y = data.heading;
+  }
+
+  /**
+   * Reserve shift (presentation only: the logic already moved the units). Per column, front to back, a unit whose row
+   * moved up glides there in render.reserveShiftMs per row with render.motionEasing. It starts
+   * render.reserveShiftStaggerMs after the unit ahead of it (the first one: after the unit that left) and is never
+   * drawn closer than one row to the unit ahead, so meshes never overlap. A unit whose row moved back (restart) snaps.
+   */
+  #animateReserve(units, now) {
+    const { reserveShiftMs, reserveShiftStaggerMs, motionEasing } = this.config.render;
     const columns = new Map();
     const inReserve = new Set();
     for (const unit of units) {
@@ -364,25 +396,32 @@ export class Renderer {
       const { col, row } = unit.reservePos;
       let entry = this.#reserveAnim.get(unit.id);
       if (!entry || entry.col !== col || row > entry.target) {
-        entry = { col, y: row, target: row, startAt: now };
+        entry = { col, y: row, from: row, target: row, startAt: now };
         this.#reserveAnim.set(unit.id, entry);
       } else if (row < entry.target) {
+        entry.from = entry.y;
         entry.target = row;
         entry.startAt = null;
       }
       if (!columns.has(col)) columns.set(col, []);
       columns.get(col).push(entry);
     }
-    for (const id of this.#reserveAnim.keys()) if (!inReserve.has(id)) this.#reserveAnim.delete(id);
-    for (const column of columns.values()) {
+    for (const [id, entry] of this.#reserveAnim) {
+      if (inReserve.has(id)) continue;
+      this.#departures.set(entry.col, now);
+      this.#reserveAnim.delete(id);
+    }
+    for (const [col, column] of columns) {
       column.sort((a, b) => a.target - b.target);
-      let leaderStart = -Infinity;
+      let leaderStart = this.#departures.has(col) ? this.#departures.get(col) : -Infinity;
       let leaderY = -Infinity;
       for (const entry of column) {
         if (entry.startAt === null) entry.startAt = Math.max(now, leaderStart + reserveShiftStaggerMs);
-        if (entry.y > entry.target) {
+        if (entry.from > entry.target) {
+          const p = (now - entry.startAt) / (reserveShiftMs * (entry.from - entry.target));
+          entry.y = entry.from + (entry.target - entry.from) * ease(motionEasing, p);
+          if (p >= 1) entry.from = entry.target;
           leaderStart = entry.startAt;
-          if (now >= entry.startAt) entry.y = Math.max(entry.target, entry.y - dt / reserveShiftMs);
         }
         entry.y = Math.max(entry.y, leaderY + 1);
         leaderY = entry.y;
@@ -390,13 +429,65 @@ export class Renderer {
     }
   }
 
-  /** Track position (interpolated distance, on the path), slot, or reserve cell (with the shift animation). */
-  #unitCellPose(unit) {
-    if (unit.pose) return trackDrawPosition(unit, this.#track, this.#alpha);
-    if (IN_SLOT.has(unit.state) && unit.slotIndex !== null) return { ...this.#layout.slotPos(unit.slotIndex), facing: 'N' };
-    const anim = this.#reserveAnim.get(unit.id);
-    const row = anim ? anim.y : unit.reservePos.row;
-    return { ...this.#layout.reservePos({ col: unit.reservePos.col, row }), facing: 'N' };
+  /**
+   * Where to draw a unit (cell units) and which way it heads:
+   *   RUNNING / EATING -- on the track path at its interpolated distance (trackPlacement.js)
+   *   LAUNCHING        -- along the eased flight curve from where it was drawn when the launch began to the entry,
+   *                       never past its place in the entry queue (launchPlacement.js)
+   *   RETURNED         -- gliding from where it left the track into its slot (render.returnToSlotMs), then parked
+   *   RESERVE          -- its reserve cell, with the eased column shift
+   */
+  #unitPose(unit, now, backs) {
+    const motion = this.#motionFor(unit, now);
+    const { motionEasing, launchLift, launchCurve, returnToSlotMs } = this.config.render;
+    let pose;
+    if (unit.pose) {
+      const p = trackDrawPosition(unit, this.#track, this.#alpha);
+      pose = { x: p.x, y: p.y, dir: HEADING[p.facing] };
+    } else if (unit.state === UnitState.LAUNCHING) {
+      if (!motion.path) motion.path = launchPath(motion.from, this.#entry.point, this.#entry.dir, { lift: launchLift, curve: launchCurve });
+      pose = flightPose(motion.path, flightProgress(unit, this.#launchSteps, this.#alpha), motionEasing, backs.get(unit.id) || 0);
+    } else if (unit.state === UnitState.RETURNED && unit.slotIndex !== null) {
+      const progress = returnToSlotMs > 0 ? (now - motion.since) / returnToSlotMs : 1;
+      pose = returnPose(motion.from, this.#layout.slotPos(unit.slotIndex), progress, motionEasing);
+    } else {
+      const anim = this.#reserveAnim.get(unit.id);
+      const row = anim ? anim.y : unit.reservePos.row;
+      pose = { ...this.#layout.reservePos({ col: unit.reservePos.col, row }), dir: HEADING.N };
+    }
+    motion.last = { x: pose.x, y: pose.y };
+    return pose;
+  }
+
+  /** Per-unit presentation memory: notices a new launch or a return and remembers where it started from. */
+  #motionFor(unit, now) {
+    let motion = this.#motion.get(unit.id);
+    if (!motion) {
+      motion = { state: unit.state, launchSeq: unit.launchSeq, from: null, since: now, path: null, last: null };
+      if (unit.state === UnitState.LAUNCHING) motion.from = this.#originPoint(unit); // first sight mid-flight
+      this.#motion.set(unit.id, motion);
+      return motion;
+    }
+    const newLaunch = unit.state === UnitState.LAUNCHING && (motion.state !== UnitState.LAUNCHING || motion.launchSeq !== unit.launchSeq);
+    if (newLaunch) {
+      motion.from = motion.last || this.#originPoint(unit);
+      motion.path = null;
+      motion.since = now;
+    } else if (unit.state === UnitState.RETURNED && motion.state !== UnitState.RETURNED) {
+      motion.from = motion.last;
+      motion.since = now;
+    }
+    motion.state = unit.state;
+    motion.launchSeq = unit.launchSeq;
+    return motion;
+  }
+
+  /** Logical start of a launch: the reserve cell it left, or its parking slot for a relaunch. */
+  #originPoint(unit) {
+    const origin = unit.launchOrigin;
+    if (origin && origin.kind === 'slot') return this.#layout.slotPos(origin.index);
+    const { col, row } = origin || unit.reservePos;
+    return this.#layout.reservePos({ col, row });
   }
 
   #removeUnit(id, group) {
@@ -419,7 +510,6 @@ export class Renderer {
       eventBus.on(Events.LEVEL_WON, tint(endTint.won)),
       eventBus.on(Events.LEVEL_LOST, tint(endTint.lost)),
       eventBus.on(Events.LEVEL_LOADED, () => tint(this.#style ? this.#style.background : background)()),
-      eventBus.on(Events.SLOT_STATE_CHANGED, ({ slots }) => this.#setSlotCounter(slots)),
     ];
     return () => offs.forEach((off) => off());
   }
@@ -471,6 +561,10 @@ export class Renderer {
     this.#slotMeshes = [];
     this.#pickables = [];
     this.#reserveAnim.clear();
+    this.#departures.clear();
+    this.#motion.clear();
+    this.#counterText = null;
+    this.#entry = null;
     this.#animClock = null;
     this.#trackGroup = null;
     this.#layout = null;

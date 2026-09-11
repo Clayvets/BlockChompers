@@ -5,8 +5,8 @@
  * Sections read by the presentation layer only (src/render, src/ui): render, ui, debug.
  * Core code must never read `render`.
  *
- * Units of measure: distances are CELL UNITS (one grid cell = 1); durations are SECONDS;
- * speeds are cells per second. Pixels/world units only appear in `render`.
+ * Units of measure: distances are CELL UNITS (one grid cell = 1); durations are SECONDS, except keys ending in Ms
+ * (milliseconds); speeds are cells per second. Easing keys hold a curve name from src/core/easing.js. Pixels/world units only appear in `render`.
  */
 export const Config = Object.freeze({
   grid: Object.freeze({
@@ -23,13 +23,13 @@ export const Config = Object.freeze({
     minMargin: 1,
     /** 'cw' | 'ccw' (top-down view). Only Track interprets this. */
     direction: 'cw',
-    /** Unit travel speed, cells per second. */
-    speed: 4,
+    /** Cruise speed of a unit on the track, cells per second (see units.launchSpeed / units.accelMs for the ramp). */
+    speed: 6.4,
     /** Shared entry corner for every activated unit; a lap runs from here back to here. */
     entry: Object.freeze({ corner: 'SW' }),
     /**
-     * Minimum distance (cells) between runners, along the track only: a launch waits until the previous runner is this
-     * far ahead, and a runner never closes in on the unit ahead beyond it (it waits while that unit eats). Keep it at
+     * Minimum distance (cells) between runners, along the track only: a launching unit waits at the entry until the
+     * last runner is this far ahead, and a runner never closes in on the unit ahead beyond it (it waits while that unit eats). Keep it at
      * least render.unitSize so meshes never overlap. 0 = pass-through (units may overlap on the path).
      */
     launchSpacing: 1,
@@ -40,12 +40,21 @@ export const Config = Object.freeze({
     defaultCapacity: 5,
     /** Levels with a smaller capacity are rejected (such a unit could only block a slot). */
     minCapacity: 1,
+    /** Speed (cells/s) a unit has when it enters the track; it ramps up to track.speed over accelMs. */
+    launchSpeed: 2,
+    /** Time (ms) from entering the track to cruise speed. 0 = cruise at once. */
+    accelMs: 400,
+    /** Curve of that speed ramp (easeOut: quick pick-up, settles into cruise without a jolt). */
+    accelEasing: 'easeOutQuad',
   }),
 
   inventory: Object.freeze({
     /** Reserve grid width; rows are derived from the level's unit count. */
     reserveCols: 4,
-    /** Strict limit of the active playing zone. */
+    /**
+     * Strict limit of the playing zone: a launch needs (units moving + units parked) < activeSlots. Moving units hold no
+     * slot; a unit that finishes a lap with capacity left parks in the leftmost free slot (the limit guarantees one).
+     */
     activeSlots: 5,
     /**
      * Only the front row of each reserve column can be launched: core rejects other picks with NOT_FRONT and the
@@ -69,6 +78,12 @@ export const Config = Object.freeze({
      * Both modes also lose with out_of_units (reserve empty, nothing moving, blocks left, no parked unit can hit).
      */
     loseMode: 'allSlotsBlocked',
+    /** Final rush: once the reserve is empty, every unit on the track (and any relaunched later) speeds up by this factor. */
+    finalRushSpeedMultiplier: 1.8,
+    /** Time (ms) the final rush takes to ramp from 1x to the multiplier. 0 = instant. */
+    finalRushRampMs: 700,
+    /** Curve of that ramp (easeInOut: no jump at the start, no jolt at the end). */
+    finalRushEasing: 'easeInOutCubic',
   }),
 
   timing: Object.freeze({
@@ -76,12 +91,10 @@ export const Config = Object.freeze({
     fixedStep: 1 / 60,
     /** Clamp for a single frame's dt (hidden-tab catch-up guard). */
     maxFrameDt: 0.1,
-    /** Delay between activation (unit in slot) and launch onto the track. */
-    launchDelay: 0.25,
-    /** Pause on the track per consumed block. 0 = instant. */
-    eatDuration: 0.15,
-    /** Presentation-side tween time for a returning unit (logic marks RETURNED immediately). */
-    returnDuration: 0.4,
+    /** Flight time (ms) from the reserve cell (or the parking slot, for a relaunch) to the track entry. */
+    launchToEntryMs: 260,
+    /** Pause on the track per consumed block (scaled with track.speed: about 64% of the time a cell takes). 0 = instant. */
+    eatDuration: 0.1,
     /** Single float tolerance used by the accumulator and lap completion. */
     epsilon: 1e-9,
   }),
@@ -103,7 +116,7 @@ export const Config = Object.freeze({
     background: 0x000000,
     /** Logical colour id -> hex. */
     palette: Object.freeze({ 1: 0xff5c5c, 2: 0x4cb5ff }),
-    slotColors: Object.freeze({ free: 0x333333, occupied: 0x777777, blocked: 0xaa2222 }),
+    slotColors: Object.freeze({ free: 0x333333, blocked: 0xaa2222 }),
     track: Object.freeze({
       showGuide: true,
       guideColor: 0x1c1c26,
@@ -162,10 +175,22 @@ export const Config = Object.freeze({
       outline: '#000000',
       outlineWidth: 6,
     }),
-    /** Reserve shift: each unit glides one cell toward the front over reserveShiftMs, front to back, starting
-     *  reserveShiftStaggerMs after the unit ahead and never closer than one cell to it (meshes never overlap). */
+    /** Reserve shift: each unit glides one cell toward the front over reserveShiftMs (motionEasing), front to back,
+     *  starting reserveShiftStaggerMs after the unit ahead (the departing unit first) and never closer than one cell. */
     reserveShiftMs: 160,
     reserveShiftStaggerMs: 60,
+    /** One curve for every eased move: launch and relaunch flight, return to a slot, reserve shift. */
+    motionEasing: 'easeOutCubic',
+    /** Launch flight shape: cells the flight first lifts off its start (clear of the reserve row it leaves)... */
+    launchLift: 0.7,
+    /** ...and how early it lines up with the track before the entry, as a fraction of the start's depth (0 = late). */
+    launchCurve: 0.5,
+    /** World units a flying or returning unit rises at mid-move, so it draws over the units it passes (top-down). */
+    hopHeight: 0.8,
+    /** Time (ms) a unit takes to glide from the entry corner to its parking slot (logic parks it at once). */
+    returnToSlotMs: 280,
+    /** How fast a unit turns to face its direction of travel, per second (exponential; higher = snappier). */
+    rotationDamping: 18,
     /**
      * Per-level presentation overrides keyed by level id (merged over the defaults above). Level files in
      * src/core/levels stay pure: colour ids there are only numbers, and their meaning lives here.

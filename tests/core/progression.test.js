@@ -126,7 +126,7 @@ describe('pause (settings panel)', () => {
     expect(game.getSnapshot().paused).toBe(true);
 
     expect(game.resume()).toEqual({ ok: true });
-    expect(game.activateUnit('u1')).toEqual({ ok: true, slotIndex: 0 });
+    expect(game.activateUnit('u1')).toEqual({ ok: true });
     expect(finish(game)).toBe(1);
     expect(game.phase).toBe(GamePhase.WON);
     expect(types(events).slice(0, 3)).toEqual([Events.GAME_PAUSED, Events.LAUNCH_REJECTED, Events.GAME_RESUMED]);

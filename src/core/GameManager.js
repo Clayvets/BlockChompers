@@ -5,6 +5,7 @@ import { UnitState } from './Unit.js';
 import { Events, RejectReason, LoseReason, LoseMode } from './Events.js';
 import { findValidMoves } from './Simulator.js';
 import { ProgressManager } from './ProgressManager.js';
+import { ease, isEasing } from './easing.js';
 
 export const GamePhase = Object.freeze({ IDLE: 'idle', PLAYING: 'playing', WON: 'won', LOST: 'lost' });
 
@@ -18,7 +19,9 @@ export const GamePhase = Object.freeze({ IDLE: 'idle', PLAYING: 'playing', WON: 
  *   events out  : collected during step() and flushed after it (effects)
  *
  * Determinism: no clock, no randomness; timers are whole steps; a unit's t equals its distance
- * travelled (entry is t = 0) so no float wrap ever happens inside the step loop.
+ * travelled (entry is t = 0) so no float wrap ever happens inside the step loop. Speed per step is a pure function
+ * of whole-step counters: the unit's acceleration ramp (units.launchSpeed -> track.speed over units.accelMs) times the
+ * final-rush factor (1 -> rules.finalRushSpeedMultiplier over rules.finalRushRampMs once the reserve is empty).
  */
 export class GameManager {
   #accumulator = 0;
@@ -26,6 +29,10 @@ export class GameManager {
   #stepping = false;
   #launchSteps = 0;
   #eatSteps = 0;
+  #accelSteps = 0;
+  #rushRampSteps = 0;
+  /** stepCount when the reserve emptied (final rush), or null before that. */
+  #rushStartStep = null;
   #movesCache = { gridVersion: -1, inventoryVersion: -1, moves: [] };
 
   /**
@@ -41,6 +48,9 @@ export class GameManager {
   }) {
     if (!Object.values(LoseMode).includes(config.rules.loseMode)) {
       throw new RangeError(`Config.rules.loseMode must be one of: ${Object.values(LoseMode).join(', ')}`);
+    }
+    for (const [key, name] of [['units.accelEasing', config.units.accelEasing], ['rules.finalRushEasing', config.rules.finalRushEasing]]) {
+      if (!isEasing(name)) throw new RangeError(`Config.${key}: unknown easing "${name}"`);
     }
     this.config = config;
     this.eventBus = eventBus;
@@ -117,9 +127,13 @@ export class GameManager {
     this.inventory.load(level.units);
     this.track = new Track({ rows: this.grid.rows, cols: this.grid.cols, ...this.config.track, epsilon: this.config.timing.epsilon });
 
-    const { fixedStep, launchDelay, eatDuration } = this.config.timing;
-    this.#launchSteps = Math.round(launchDelay / fixedStep);
+    const { fixedStep, launchToEntryMs, eatDuration } = this.config.timing;
+    const stepsFor = (ms) => Math.round(ms / 1000 / fixedStep);
+    this.#launchSteps = stepsFor(launchToEntryMs);
     this.#eatSteps = Math.round(eatDuration / fixedStep);
+    this.#accelSteps = stepsFor(this.config.units.accelMs);
+    this.#rushRampSteps = stepsFor(this.config.rules.finalRushRampMs);
+    this.#rushStartStep = null;
     this.stepCount = 0;
     this.#accumulator = 0;
     this.#pendingEvents = [];
@@ -147,8 +161,8 @@ export class GameManager {
   }
 
   /**
-   * Advance n fixed steps (no-op unless PLAYING). Runners move front to back along the track (ties: slot order) and
-   * keep track.launchSpacing behind the unit ahead. Per step: launch -> move/scan -> resolve win/lose,
+   * Advance n fixed steps (no-op unless PLAYING). Runners move front to back along the track (ties: launch order) and
+   * keep track.launchSpacing behind the unit ahead. Per step: launch (entry) -> move/scan -> resolve win/lose,
    * then flush the events collected during the step. Returns the flushed events.
    * @returns {Array<{ type: string, payload: any }>}
    */
@@ -174,10 +188,11 @@ export class GameManager {
   }
 
   /**
-   * Player command: move a reserve unit into a free active slot; it launches after timing.launchDelay.
+   * Player command: a front reserve unit flies straight to the track entry (LAUNCHING, timing.launchToEntryMs) and
+   * enters the track once the entry is clear; it takes no slot. Allowed while (moving + parked) < activeSlots.
    * Never throws; a rejection emits LAUNCH_REJECTED with a RejectReason. The units behind it in its reserve column
-   * move up one cell (RESERVE_SHIFTED).
-   * @returns {{ ok: boolean, slotIndex?: number, reason?: string }}
+   * move up one cell (RESERVE_SHIFTED). Launching the last reserve unit starts the final rush (FINAL_RUSH_STARTED).
+   * @returns {{ ok: boolean, reason?: string }}
    */
   activateUnit(unitId) {
     const check = this.canActivate(unitId);
@@ -185,18 +200,19 @@ export class GameManager {
       this.#emit(Events.LAUNCH_REJECTED, { unitId, reason: check.reason });
       return check;
     }
-    const result = this.inventory.activate(unitId);
+    const result = this.inventory.launch(unitId);
     if (!result.ok) {
       this.#emit(Events.LAUNCH_REJECTED, { unitId, reason: result.reason });
       return { ok: false, reason: result.reason };
     }
-    this.inventory.getUnit(unitId).timer = this.#launchSteps;
-    this.#emit(Events.UNIT_ACTIVATED, { unitId, slotIndex: result.slotIndex });
-    this.#emitSlotChange(result.slotIndex, 'free', 'occupied');
+    const unit = this.inventory.getUnit(unitId);
+    this.#startFlight(unit);
+    this.#emit(Events.UNIT_ACTIVATED, { unitId, from: { ...unit.reservePos } });
     if (result.shifted.length > 0) {
       this.#emit(Events.RESERVE_SHIFTED, { column: result.shifted[0].from.col, moves: result.shifted });
     }
-    return { ok: true, slotIndex: result.slotIndex };
+    this.#maybeStartFinalRush();
+    return { ok: true };
   }
 
   /** Same checks as activateUnit without side effects. */
@@ -209,20 +225,20 @@ export class GameManager {
     return reason ? { ok: false, reason } : { ok: true };
   }
 
-  /** Why `unit` cannot take a slot right now, ignoring phase and pause; null when it can. */
+  /** Why `unit` cannot launch right now, ignoring phase and pause; null when it can. */
   #activationBlocker(unit) {
     if (unit.state !== UnitState.RESERVE) return RejectReason.NOT_IN_RESERVE;
     if (this.config.inventory.frontOnlyPick && !this.inventory.isFront(unit.id)) return RejectReason.NOT_FRONT;
-    if (!this.inventory.hasFreeSlot()) return RejectReason.NO_FREE_SLOT;
+    if (!this.inventory.hasRoom()) return RejectReason.NO_FREE_SLOT;
     if (!this.config.rules.allowNoTargetActivation && this.grid.countRemaining(unit.color) === 0) return RejectReason.NO_TARGET;
     return null;
   }
 
   /**
-   * Player command: send the unit parked in `slotIndex` back on the track (rules.allowRelaunchParked). It keeps its
-   * capacity and its slot (OCCUPIED while it moves), launches after timing.launchDelay like a fresh activation, dies
-   * and frees the slot at capacity 0, or parks in the same slot again after the lap. Never throws; a rejection emits
-   * LAUNCH_REJECTED.
+   * Player command: send the unit parked in `slotIndex` back to the track (rules.allowRelaunchParked). It keeps its
+   * capacity; its slot becomes FREE at once, but the unit still counts against the limit while it moves. It flies to
+   * the entry like a fresh launch (and gets the final rush if it is on), dies at capacity 0, or parks again in the
+   * leftmost free slot after the lap. Never throws; a rejection emits LAUNCH_REJECTED.
    * @returns {{ ok: boolean, unitId?: string, reason?: string }}
    */
   launchFromSlot(slotIndex) {
@@ -233,9 +249,10 @@ export class GameManager {
     }
     const { unitId } = this.inventory.relaunch(slotIndex);
     const unit = this.inventory.getUnit(unitId);
-    unit.timer = this.#launchSteps;
+    this.#startFlight(unit);
     this.#emit(Events.UNIT_RELAUNCHED, { unitId, slotIndex, capacity: unit.capacity });
-    this.#emitSlotChange(slotIndex, 'blocked', 'occupied');
+    this.#emit(Events.SLOT_FREED, { slotIndex });
+    this.#emitSlotChange(slotIndex, 'blocked', 'free');
     return { ok: true, unitId };
   }
 
@@ -395,23 +412,70 @@ export class GameManager {
       track,
       units,
       slots: inventory.slots,
-      inventory: { reserveCols: inventory.reserveCols, reserveRows: inventory.reserveRows, version: inventory.version },
+      inventory: {
+        reserveCols: inventory.reserveCols,
+        reserveRows: inventory.reserveRows,
+        version: inventory.version,
+        /** Units moving + units parked, and what the "N/5" counter shows: activeSlots - inUse. */
+        inUse: inventory.inUse,
+        available: inventory.available,
+      },
+      /** Whole steps a launch flight takes (timing.launchToEntryMs); a LAUNCHING unit's progress is 1 - timer / launchSteps. */
+      launchSteps: this.#launchSteps,
+      /** Final rush state; multiplier is the factor applied in the latest step (1 before the rush). */
+      finalRush: { active: this.#rushStartStep !== null, startStep: this.#rushStartStep, multiplier: this.#rushMultiplier() },
       progress: this.progress.getState(),
     };
   }
 
   // ---- step phases (private) ----
 
+  /** Put a unit on its flight to the entry: timer = launchSteps, and forget the previous lap. */
+  #startFlight(unit) {
+    unit.timer = this.#launchSteps;
+    unit.t = 0;
+    unit.distanceTraveled = 0;
+    unit.prevDistance = 0;
+    unit.trackSteps = 0;
+    unit.speed = 0;
+  }
+
+  /** The reserve just emptied: start the final rush once per level (FINAL_RUSH_STARTED). */
+  #maybeStartFinalRush() {
+    if (this.#rushStartStep !== null || this.inventory.hasReserve()) return;
+    this.#rushStartStep = this.stepCount;
+    const { finalRushSpeedMultiplier: multiplier, finalRushRampMs: rampMs } = this.config.rules;
+    this.#emit(Events.FINAL_RUSH_STARTED, { stepCount: this.stepCount, multiplier, rampMs });
+  }
+
+  /** Final-rush factor for the current step: 1 before the rush, then eased up to the multiplier over the ramp. */
+  #rushMultiplier() {
+    if (this.#rushStartStep === null) return 1;
+    const { finalRushSpeedMultiplier: max, finalRushEasing } = this.config.rules;
+    const p = this.#rushRampSteps > 0 ? (this.stepCount - this.#rushStartStep) / this.#rushRampSteps : 1;
+    return p >= 1 ? max : 1 + (max - 1) * ease(finalRushEasing, p);
+  }
+
+  /** Speed (cells/s) for a unit's current step on the track: acceleration ramp times the final-rush factor. */
+  #speedFor(unit) {
+    const cruise = this.config.track.speed;
+    const { launchSpeed, accelEasing } = this.config.units;
+    const p = this.#accelSteps > 0 ? unit.trackSteps / this.#accelSteps : 1;
+    const base = p >= 1 ? cruise : launchSpeed + (cruise - launchSpeed) * ease(accelEasing, p);
+    return base * this.#rushMultiplier();
+  }
+
+  /** LAUNCHING units (launch order) count their flight down; at the entry they wait until it is clear, then enter. */
   #launchUnits() {
     for (const unit of this.inventory.getRunners()) {
-      if (unit.state !== UnitState.ACTIVE) continue;
-      unit.timer -= 1;
+      if (unit.state !== UnitState.LAUNCHING) continue;
+      unit.timer = Math.max(0, unit.timer - 1);
       if (unit.timer > 0 || this.#launchBlocked()) continue;
       unit.state = UnitState.RUNNING;
       unit.t = 0;
       unit.distanceTraveled = 0;
       unit.prevDistance = 0;
-      unit.timer = 0;
+      unit.trackSteps = 0;
       this.#emit(Events.UNIT_LAUNCHED, { unitId: unit.id, t: 0 });
     }
   }
@@ -426,19 +490,23 @@ export class GameManager {
 
   #moveUnits() {
     const { fixedStep, epsilon } = this.config.timing;
-    const dist = this.config.track.speed * fixedStep;
     const length = this.track.length;
     const perPass = this.config.rules.blocksPerLanePass;
     const spacing = this.config.track.launchSpacing;
-    // Front to back along the track (ties: slot order), so each follower is limited by where the unit ahead ended up.
-    const runners = this.inventory.getRunners().sort((a, b) => b.distanceTraveled - a.distanceTraveled || a.slotIndex - b.slotIndex);
+    // Front to back along the track (ties: launch order), so each follower is limited by where the unit ahead ended up.
+    const runners = this.inventory
+      .getRunners()
+      .filter((unit) => unit.state !== UnitState.LAUNCHING)
+      .sort((a, b) => b.distanceTraveled - a.distanceTraveled || a.launchSeq - b.launchSeq);
     let ahead = Infinity; // distance of the nearest unit ahead that is still on the track
 
     for (const unit of runners) {
       unit.prevDistance = unit.distanceTraveled;
+      unit.trackSteps += 1;
       if (unit.state === UnitState.EATING) {
         unit.timer -= 1;
         if (unit.timer > 0) {
+          unit.speed = 0;
           ahead = unit.distanceTraveled;
           continue;
         }
@@ -447,6 +515,8 @@ export class GameManager {
       }
       if (unit.state !== UnitState.RUNNING) continue;
 
+      unit.speed = this.#speedFor(unit);
+      const dist = unit.speed * fixedStep;
       const remaining = length - unit.distanceTraveled;
       // Follow distance: never closer than track.launchSpacing behind the unit ahead (0 = pass-through).
       const step = spacing > 0 && ahead !== Infinity ? Math.max(0, Math.min(dist, ahead - spacing - unit.distanceTraveled)) : dist;
@@ -499,21 +569,17 @@ export class GameManager {
   }
 
   #kill(unit) {
-    const slotIndex = unit.slotIndex;
-    unit.state = UnitState.DEAD;
-    this.inventory.release(slotIndex);
-    this.#emit(Events.UNIT_DIED, { unitId: unit.id, slotIndex });
-    this.#emit(Events.SLOT_FREED, { slotIndex });
-    this.#emitSlotChange(slotIndex, 'occupied', 'free');
+    this.inventory.retire(unit.id);
+    this.#emit(Events.UNIT_DIED, { unitId: unit.id });
   }
 
+  /** Lap finished with capacity left: park in the leftmost free slot (the slot limit guarantees one). */
   #return(unit) {
-    const slotIndex = unit.slotIndex;
-    unit.state = UnitState.RETURNED;
-    this.inventory.block(slotIndex);
+    unit.speed = 0;
+    const slotIndex = this.inventory.park(unit.id);
     this.#emit(Events.UNIT_RETURNED, { unitId: unit.id, slotIndex });
     this.#emit(Events.SLOT_BLOCKED, { slotIndex, unitId: unit.id });
-    this.#emitSlotChange(slotIndex, 'occupied', 'blocked');
+    this.#emitSlotChange(slotIndex, 'free', 'blocked');
   }
 
   #resolvePhase() {

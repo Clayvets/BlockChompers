@@ -30,20 +30,17 @@ describe('GameManager', () => {
   });
 
   describe('activation', () => {
-    it('moves a reserve unit into the lowest free slot and emits UNIT_ACTIVATED at once', () => {
-      const { game, eventBus } = createTestGame({ level: SINGLE_LANE_LEVEL });
+    it('sends a reserve unit straight toward the track entry without taking a slot, emitting UNIT_ACTIVATED at once', () => {
+      const { game, eventBus } = createTestGame({ level: TWO_COLORS_LEVEL });
       const events = captureEvents(eventBus);
-      expect(game.activateUnit('u0')).toEqual({ ok: true, slotIndex: 0 });
-      const u0 = unit(game, 'u0');
-      expect(u0.state).toBe(UnitState.ACTIVE);
-      expect(u0.slotIndex).toBe(0);
-      expect(game.getSnapshot().slots[0]).toEqual({ index: 0, status: 'occupied', unitId: 'u0' });
-      expect(events.map((e) => e.type)).toEqual([Events.UNIT_ACTIVATED, Events.SLOT_STATE_CHANGED]);
-      expect(events[0].payload).toEqual({ unitId: 'u0', slotIndex: 0 });
-      expect(events[1].payload).toMatchObject({ slotIndex: 0, from: 'free', to: 'occupied' });
+      expect(game.activateUnit('u0')).toEqual({ ok: true });
+      expect(unit(game, 'u0')).toMatchObject({ state: UnitState.LAUNCHING, slotIndex: null, launchOrigin: { kind: 'reserve', col: 0, row: 0 } });
+      expect(game.getSnapshot().slots.map((s) => s.status)).toEqual(Array(5).fill('free'));
+      expect(game.getSnapshot().inventory).toMatchObject({ inUse: 1, available: 4 });
+      expect(events).toEqual([{ type: Events.UNIT_ACTIVATED, payload: { unitId: 'u0', from: { col: 0, row: 0 } } }]);
     });
 
-    it('rejects with NO_FREE_SLOT when all 5 slots are occupied', () => {
+    it('rejects with NO_FREE_SLOT when moving + parked units already fill all 5 places', () => {
       const { game, eventBus } = createTestGame({ level: ALL_BLOCKED_LEVEL });
       for (let i = 0; i < 5; i += 1) expect(game.activateUnit(`u${i}`).ok).toBe(true);
       const events = captureEvents(eventBus);
@@ -51,11 +48,11 @@ describe('GameManager', () => {
       expect(events).toEqual([{ type: Events.LAUNCH_REJECTED, payload: { unitId: 'u5', reason: RejectReason.NO_FREE_SLOT } }]);
     });
 
-    it('rejects with NOT_IN_RESERVE for units that are active, dead or returned', () => {
+    it('rejects with NOT_IN_RESERVE for units that are launching, dead or returned', () => {
       const { game } = createTestGame({ level: DIE_AND_PARK_LEVEL });
       game.activateUnit('u0');
       game.activateUnit('u1');
-      expect(game.activateUnit('u0')).toEqual({ ok: false, reason: RejectReason.NOT_IN_RESERVE }); // active
+      expect(game.activateUnit('u0')).toEqual({ ok: false, reason: RejectReason.NOT_IN_RESERVE }); // launching
       game.step(); // u0 (blue 1) eats (2,0) and dies
       expect(unit(game, 'u0').state).toBe(UnitState.DEAD);
       expect(game.activateUnit('u0').reason).toBe(RejectReason.NOT_IN_RESERVE);
@@ -79,11 +76,12 @@ describe('GameManager', () => {
       expect(game.activateUnit('nope')).toEqual({ ok: false, reason: RejectReason.UNKNOWN_UNIT });
     });
 
-    it('launches the unit at track.entryT after timing.launchDelay and moves in that same step', () => {
-      const { game } = createTestGame({ level: SINGLE_LANE_LEVEL, config: { timing: { launchDelay: 2 } } });
+    it('enters the track at track.entryT after timing.launchToEntryMs and moves in that same step', () => {
+      const { game } = createTestGame({ level: SINGLE_LANE_LEVEL, config: { timing: { launchToEntryMs: 2000 } } }); // 2 steps
       game.activateUnit('u0');
+      expect(game.getSnapshot().launchSteps).toBe(2);
       game.step();
-      expect(unit(game, 'u0')).toMatchObject({ state: UnitState.ACTIVE, pose: null });
+      expect(unit(game, 'u0')).toMatchObject({ state: UnitState.LAUNCHING, pose: null, timer: 1 });
       const events = game.step();
       expect(events.find((e) => e.type === Events.UNIT_LAUNCHED).payload).toEqual({ unitId: 'u0', t: 0 });
       expect(unit(game, 'u0')).toMatchObject({ state: UnitState.RUNNING, t: 1, distanceTraveled: 1 });
@@ -94,7 +92,7 @@ describe('GameManager', () => {
       game.activateUnit('u0');
       game.step(2);
       expect(unit(game, 'u0').state).toBe(UnitState.RUNNING);
-      expect(game.activateUnit('u1')).toEqual({ ok: true, slotIndex: 1 });
+      expect(game.activateUnit('u1')).toEqual({ ok: true });
       game.step();
       expect(game.inventory.getRunners().map((u) => u.id)).toEqual(['u0', 'u1']);
     });
@@ -104,7 +102,7 @@ describe('GameManager', () => {
       game.activateUnit('u0');
       game.activateUnit('u1');
       game.step(2);
-      expect(unit(game, 'u1').state).toBe(UnitState.ACTIVE);
+      expect(unit(game, 'u1')).toMatchObject({ state: UnitState.LAUNCHING, timer: 0 }); // arrived, waiting at the entry
       game.step();
       expect(unit(game, 'u1')).toMatchObject({ state: UnitState.RUNNING, distanceTraveled: 1 });
       expect(unit(game, 'u0').distanceTraveled).toBe(3);
@@ -164,7 +162,7 @@ describe('GameManager', () => {
       expect(game.phase).toBe(GamePhase.PLAYING);
     });
 
-    it('resolves same-lane contention in slot order', () => {
+    it('resolves same-lane contention in launch order', () => {
       const { game } = createTestGame({ level: CONTENTION_LEVEL });
       game.activateUnit('u0');
       game.activateUnit('u1');
@@ -187,14 +185,16 @@ describe('GameManager', () => {
   });
 
   describe('death and parking', () => {
-    it('marks the unit DEAD and frees its slot when capacity reaches 0', () => {
+    it('marks the unit DEAD when capacity reaches 0 and gives its place back', () => {
       const { game } = createTestGame({ level: TWO_SINGLES_LEVEL });
       game.activateUnit('u0');
+      expect(game.getSnapshot().inventory.available).toBe(4);
       const events = game.step();
       expect(unit(game, 'u0').state).toBe(UnitState.DEAD);
-      expect(game.getSnapshot().slots[0]).toEqual({ index: 0, status: 'free', unitId: null });
-      expect(events.find((e) => e.type === Events.UNIT_DIED).payload).toEqual({ unitId: 'u0', slotIndex: 0 });
-      expect(events.find((e) => e.type === Events.SLOT_FREED).payload).toEqual({ slotIndex: 0 });
+      expect(game.getSnapshot().inventory.available).toBe(5);
+      expect(game.getSnapshot().slots.map((s) => s.status)).toEqual(Array(5).fill('free'));
+      expect(events.find((e) => e.type === Events.UNIT_DIED).payload).toEqual({ unitId: 'u0' });
+      expect(types(events)).not.toContain(Events.SLOT_FREED); // it never held a slot
       expect(game.phase).toBe(GamePhase.PLAYING);
     });
 
@@ -210,15 +210,15 @@ describe('GameManager', () => {
       expect(events.find((e) => e.type === Events.SLOT_BLOCKED).payload).toEqual({ slotIndex: 0, unitId: 'u0' });
     });
 
-    it('parks the unit in the SAME slot it was activated into', () => {
+    it('parks a returning unit in the leftmost FREE slot', () => {
       const { game } = createTestGame({ level: DIE_AND_PARK_LEVEL });
-      game.activateUnit('u0'); // slot 0, dies at step 1
-      game.activateUnit('u1'); // slot 1, walled in, parks at step 16
+      game.activateUnit('u0'); // blue 1, dies at step 1
+      game.activateUnit('u1'); // red 1, walled in, parks at step 16
       game.step(16);
       const { slots } = game.getSnapshot();
-      expect(slots[0]).toEqual({ index: 0, status: 'free', unitId: null });
-      expect(slots[1]).toEqual({ index: 1, status: 'blocked', unitId: 'u1' });
-      expect(unit(game, 'u1').slotIndex).toBe(1);
+      expect(slots[0]).toEqual({ index: 0, status: 'blocked', unitId: 'u1' });
+      expect(slots.slice(1).map((s) => s.status)).toEqual(Array(4).fill('free'));
+      expect(unit(game, 'u1').slotIndex).toBe(0);
     });
   });
 

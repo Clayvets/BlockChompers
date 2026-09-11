@@ -85,3 +85,17 @@ export const JAM_LEVEL = level('test-jam', [
   [2, 1, 1, 1, 1, 2, 2],
   [2, 2, 2, 2, 2, 2, 2],
 ], [...units(4, 1, 1), unit(2, 17)]);
+
+/**
+ * 5x5 (length 24, 20 lanes) nested rings: green outer ring (16), blue ring (8), red centre (1); units red 1, blue 8,
+ * green 16 in one reserve row. Red and blue are walled in, so each parks after a full lap that scans every lane.
+ * Green eats its whole ring in one lap (5 W + 4 N + 4 E + 3 S lanes) and dies, which exposes blue but still walls red:
+ * a relaunched red unit scans every lane again, this time at final-rush speed (green was the last reserve unit).
+ */
+export const NESTED_LEVEL = level('test-nested', [
+  [3, 3, 3, 3, 3],
+  [3, 2, 2, 2, 3],
+  [3, 2, 1, 2, 3],
+  [3, 2, 2, 2, 3],
+  [3, 3, 3, 3, 3],
+], [unit(1, 1), unit(2, 8), unit(3, 16)]);

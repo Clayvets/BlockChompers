@@ -2,12 +2,15 @@ import { createConfig } from '../../src/config/Config.js';
 import { createGame } from '../../src/core/createGame.js';
 
 /**
- * Test base: speed 1 cell/s and fixedStep 1 s => one step() == one cell; no launch or eat delays, and no launch
- * spacing, so units activated together run in lockstep (rule tests rely on it; spacing has its own tests).
+ * Test base: speed 1 cell/s and fixedStep 1 s => one step() == one cell; no launch flight, eat pause, acceleration
+ * ramp or final-rush speed-up, and no launch spacing, so units activated together run in lockstep (rule tests rely on
+ * it; each feel mechanic has its own tests with its own overrides). FINAL_RUSH_STARTED still fires (factor 1).
  */
 export const TEST_OVERRIDES = Object.freeze({
   track: { speed: 1, launchSpacing: 0 },
-  timing: { fixedStep: 1, launchDelay: 0, eatDuration: 0 },
+  units: { accelMs: 0 },
+  timing: { fixedStep: 1, launchToEntryMs: 0, eatDuration: 0 },
+  rules: { finalRushSpeedMultiplier: 1 },
 });
 
 const isPlain = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);

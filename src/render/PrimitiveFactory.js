@@ -93,7 +93,7 @@ export class PrimitiveFactory {
     return mesh;
   }
 
-  /** Shared material for a slot status ('free' | 'occupied' | 'blocked'). */
+  /** Shared material for a slot status ('free' | 'blocked'). */
   slotMaterial(status) {
     return this.#flat(this.render.slotColors[status]);
   }

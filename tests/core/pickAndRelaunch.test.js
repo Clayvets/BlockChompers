@@ -30,13 +30,13 @@ describe('front-only picks (inventory.frontOnlyPick)', () => {
   it('shifts the column up when its front leaves, making the next unit pickable', () => {
     const { game, eventBus } = createTestGame({ level: ALL_BLOCKED_LEVEL });
     const events = captureEvents(eventBus);
-    expect(game.activateUnit('u0')).toEqual({ ok: true, slotIndex: 0 });
+    expect(game.activateUnit('u0')).toEqual({ ok: true });
     expect(ofType(events, Events.RESERVE_SHIFTED)).toEqual([
       { column: 0, moves: [{ unitId: 'u4', from: { col: 0, row: 1 }, to: { col: 0, row: 0 } }] },
     ]);
     expect(unit(game, 'u4').reservePos).toEqual({ col: 0, row: 0 }); // logic shifts instantly
     expect(unit(game, 'u5').reservePos).toEqual({ col: 1, row: 1 }); // other columns untouched
-    expect(game.activateUnit('u4')).toEqual({ ok: true, slotIndex: 1 });
+    expect(game.activateUnit('u4')).toEqual({ ok: true });
     expect(game.activateUnit('u2')).toMatchObject({ ok: true }); // nothing behind u2: no shift event
     expect(ofType(events, Events.RESERVE_SHIFTED)).toHaveLength(1);
   });
@@ -44,14 +44,14 @@ describe('front-only picks (inventory.frontOnlyPick)', () => {
   it('allows any reserve unit when frontOnlyPick is off (the column still closes up)', () => {
     const { game, eventBus } = createTestGame({ level: ALL_BLOCKED_LEVEL, config: { inventory: { frontOnlyPick: false } } });
     const events = captureEvents(eventBus);
-    expect(game.activateUnit('u5')).toEqual({ ok: true, slotIndex: 0 });
+    expect(game.activateUnit('u5')).toEqual({ ok: true });
     expect(ofType(events, Events.RESERVE_SHIFTED)).toEqual([]);
-    expect(game.activateUnit('u1')).toEqual({ ok: true, slotIndex: 1 });
+    expect(game.activateUnit('u1')).toEqual({ ok: true });
   });
 });
 
 describe('relaunching parked units (rules.allowRelaunchParked)', () => {
-  it('keeps the capacity and the slot, which stays OCCUPIED while the unit moves', () => {
+  it('keeps the capacity; the slot becomes FREE at once but the unit still counts while it moves', () => {
     const { game, eventBus } = createTestGame({ level: STACKED_LEVEL });
     game.activateUnit('u0'); // red 2: one lap reaches only (1,0) -> parks with 1 in slot 0 at step 16
     game.step(16);
@@ -59,16 +59,18 @@ describe('relaunching parked units (rules.allowRelaunchParked)', () => {
     expect(slot(game, 0)).toEqual({ index: 0, status: 'blocked', unitId: 'u0' });
     const events = captureEvents(eventBus);
     expect(game.launchFromSlot(0)).toEqual({ ok: true, unitId: 'u0' });
-    expect(events.map((e) => e.type)).toEqual([Events.UNIT_RELAUNCHED, Events.SLOT_STATE_CHANGED]);
+    expect(events.map((e) => e.type)).toEqual([Events.UNIT_RELAUNCHED, Events.SLOT_FREED, Events.SLOT_STATE_CHANGED]);
     expect(events[0].payload).toEqual({ unitId: 'u0', slotIndex: 0, capacity: 1 });
-    expect(events[1].payload).toMatchObject({ slotIndex: 0, from: 'blocked', to: 'occupied' });
-    expect(slot(game, 0)).toEqual({ index: 0, status: 'occupied', unitId: 'u0' });
+    expect(events[1].payload).toEqual({ slotIndex: 0 });
+    expect(events[2].payload).toMatchObject({ slotIndex: 0, from: 'blocked', to: 'free' });
+    expect(slot(game, 0)).toEqual({ index: 0, status: 'free', unitId: null });
+    expect(unit(game, 'u0')).toMatchObject({ state: UnitState.LAUNCHING, slotIndex: null, launchOrigin: { kind: 'slot', index: 0 } });
+    expect(game.getSnapshot().inventory).toMatchObject({ inUse: 1, available: 4 }); // still counted: it is moving
     game.step();
-    expect(unit(game, 'u0')).toMatchObject({ state: UnitState.RUNNING, capacity: 1, slotIndex: 0, distanceTraveled: 1 });
-    expect(slot(game, 0).status).toBe('occupied');
+    expect(unit(game, 'u0')).toMatchObject({ state: UnitState.RUNNING, capacity: 1, slotIndex: null, distanceTraveled: 1 });
   });
 
-  it('dies at capacity 0 and frees its slot', () => {
+  it('dies at capacity 0 and gives its place back', () => {
     const { game, eventBus } = createTestGame({ level: STACKED_LEVEL });
     game.activateUnit('u0');
     game.step(16);
@@ -77,11 +79,12 @@ describe('relaunching parked units (rules.allowRelaunchParked)', () => {
     game.step(2); // W row1 now shows (1,1) first
     expect(unit(game, 'u0')).toMatchObject({ state: UnitState.DEAD, capacity: 0 });
     expect(slot(game, 0)).toEqual({ index: 0, status: 'free', unitId: null });
+    expect(game.getSnapshot().inventory.available).toBe(5);
     expect(ofType(events, Events.BLOCK_CONSUMED)).toEqual([expect.objectContaining({ unitId: 'u0', row: 1, col: 1 })]);
-    expect(ofType(events, Events.SLOT_FREED)).toEqual([{ slotIndex: 0 }]);
+    expect(ofType(events, Events.UNIT_DIED)).toEqual([{ unitId: 'u0' }]);
   });
 
-  it('parks again in the same slot when it still cannot reach 0', () => {
+  it('parks again in the leftmost free slot when it still cannot reach 0', () => {
     const { game } = createTestGame({ level: WALLED_LEVEL });
     game.activateUnit('u0'); // red centre is walled in by blue
     game.step(16);
@@ -97,7 +100,7 @@ describe('relaunching parked units (rules.allowRelaunchParked)', () => {
     const events = captureEvents(eventBus);
     expect(game.launchFromSlot(0)).toEqual({ ok: false, reason: RejectReason.NOT_PARKED }); // free
     game.activateUnit('u0');
-    expect(game.launchFromSlot(0)).toEqual({ ok: false, reason: RejectReason.NOT_PARKED }); // occupied
+    expect(game.launchFromSlot(0)).toEqual({ ok: false, reason: RejectReason.NOT_PARKED }); // still free: u0 is moving
     expect(game.launchFromSlot(7)).toEqual({ ok: false, reason: RejectReason.UNKNOWN_SLOT });
     game.step(16);
     game.pause();
@@ -153,7 +156,7 @@ describe('LOSE is a deadlock', () => {
     game.launchFromSlot(0);
     runUntil(game, (g) => unit(g, 'u0').state === UnitState.DEAD);
     expect(game.stepCount).toBe(45);
-    expect(game.activateUnit('u2')).toEqual({ ok: true, slotIndex: 0 });
+    expect(game.activateUnit('u2')).toEqual({ ok: true });
     finish(game);
     expect(game.phase).toBe(GamePhase.WON);
     expect(game.stepCount).toBe(48);

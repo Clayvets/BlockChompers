@@ -12,6 +12,7 @@
       }
       canvas {
         display: block;
+        touch-action: none; /* taps go straight to pointerdown: no pan, zoom or double-tap delay */
       }
       /* Layout only. Colours, sizes and timings are CSS custom properties published from Config.ui by UIManager. */
       #ui-root {

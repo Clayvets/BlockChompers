@@ -203,4 +203,76 @@ presentation only (`src/render` and the DOM UI in `src/ui`).
 
 ## v2 – Feel
 
+Goal: make v1 feel responsive and fluid without changing what wins or loses a level. Everything here builds on v1;
+the v1 section above still describes v1 as it was.
+
+### What changed
+
+1. **Launch straight to the track.** Tapping a front reserve unit sends it on a short flight to the track entry; it no
+   longer stops in a slot first. Slots only receive units that finish a lap with capacity left, and those park in the
+   leftmost free slot. The 5-slot limit now counts units moving plus units parked: a launch is refused when that sum is
+   5, and the "N/5" counter shows 5 minus that sum, so it still drops by 1 on every launch. A relaunched unit frees its
+   slot at once but keeps counting while it moves. Unit states are now reserve, launching (flying to the entry),
+   running, eating, returned (parked) and dead. The lose rules are unchanged.
+2. **Faster track.** Cruise speed went from 4 to 6.4 cells per second: +40% was the starting point, and +60% is where
+   the laps stopped feeling long. The bite pause shrank with it, from 0.15 to 0.1 s. Lanes are still scanned
+   discretely, so no lane is skipped at cruise or at final-rush speed.
+3. **Glide instead of stiff movement.** Units react on pointerdown, and the canvas no longer lets the browser handle
+   touch gestures. The launch flight lifts off the reserve and curves into the entry along the track, easing out over
+   260 ms. Units that must wait for the follow distance hold on their own path behind the entry instead of stacking. On
+   the track a unit starts at 2 cells per second and eases up to cruise over 400 ms; this is logic, deterministic and
+   tested. The return to a slot, the relaunch and the reserve shift use the same ease-out curve, and moving units hop
+   so they draw over the units they pass. Units turn smoothly toward their direction of travel, corners included; the
+   logical path is unchanged.
+4. **Final rush.** When the last reserve unit launches, every moving unit, and any unit relaunched afterwards, speeds
+   up to 1.8x over 700 ms with an ease-in-out ramp. It starts once per level, emits `FINAL_RUSH_STARTED` and is part
+   of the deterministic simulation.
+5. **Tests.** 205 headless tests, up from 185. New ones cover a launch that takes no slot and the moving-plus-parked
+   limit, the counter formula, parking in the leftmost free slot, acceleration reaching cruise at `units.accelMs`,
+   every lane scanned once per lap at cruise and rush speed, the rush starting exactly once when the reserve empties,
+   deep-equal snapshots for identical command scripts on the shipped config, and the render helpers for the flight,
+   the entry queue and the return glide. The v1 WIN and LOSE scenarios pass with the same step counts, because the
+   test base turns the new motion off; tests that described the old slot-first launch were rewritten.
+
+### Why each change improves feel
+
+- **Responsiveness.** A tap now sends the unit toward the track on the very next frame, instead of parking it in a slot
+  for 0.25 s. Pointerdown plus disabled touch gestures means no browser delay between the finger and the unit. Slots
+  now only mean "parked", so they read as a warning, not as a waiting room.
+- **Flow.** Eased flights, returns and reserve shifts replace snaps and linear slides. The acceleration ramp removes the
+  jump to full speed at the entry, damped turning rounds the corners, and a burst of taps forms a neat queue.
+- **Pacing.** Laps are about 37% shorter: 11.6 s instead of 18.5 s on Level 1, and 20 s instead of 32 s on Carrot.
+  Played strictly one unit at a time, Level 1 drops from 3.3 to 2.1 minutes and Carrot from 12.1 to 7.6. The shorter
+  bite keeps v1's stop-and-go rhythm at the higher speed.
+- **End-of-level tension.** Once the reserve is empty the player can only watch. The final rush turns that wait into a
+  short sprint to the finish, and the eased ramp keeps it readable.
+
+### Exact values tuned
+
+Values are copied from `src/config/Config.js`; "new" means the key did not exist in v1.
+
+| Config key | v1 value | v2 value | Why |
+|---|---|---|---|
+| `track.speed` | `4` | `6.4` | Cruise speed, cells/s. +40% was the starting point; +60% brings a Level 1 lap to 11.6 s. |
+| `timing.eatDuration` | `0.15` | `0.1` | Bite pause, scaled with the speed so a bite still takes about 60% of a cell's travel time. |
+| `timing.launchDelay` | `0.25` | removed | The wait in a slot before entering the track is gone. |
+| `timing.launchToEntryMs` | new | `260` | Flight from the reserve (or the slot) to the entry, ms: short, about as long as the old slot wait. |
+| `units.launchSpeed` | new | `2` | Speed on entering the track, cells/s, so the unit visibly picks up speed. |
+| `units.accelMs` | new | `400` | Time from entering the track to cruise speed. |
+| `units.accelEasing` | new | `'easeOutQuad'` | Quick pick-up that settles into cruise without a jolt. |
+| `rules.finalRushSpeedMultiplier` | new | `1.8` | Rush speed factor once the reserve is empty. |
+| `rules.finalRushRampMs` | new | `700` | Ramp time, so the rush never jumps. |
+| `rules.finalRushEasing` | new | `'easeInOutCubic'` | Gentle start and end of the ramp. |
+| `render.motionEasing` | new | `'easeOutCubic'` | One curve for launch, relaunch, return and reserve shift (v1: snaps and a linear shift). |
+| `render.launchLift` | new | `0.7` | Cells the flight rises off the reserve before turning, so it clears the other front units. |
+| `render.launchCurve` | new | `0.5` | How early the flight lines up with the track, as a fraction of its depth below the entry. |
+| `render.hopHeight` | new | `0.8` | Height of the hop, so a flying or returning unit draws over the units it passes. |
+| `render.returnToSlotMs` | new | `280` | Glide from the entry corner into the parking slot (v1: an instant jump). |
+| `timing.returnDuration` | `0.4` | removed | Declared in v1 but never read; replaced by `render.returnToSlotMs`. |
+| `render.rotationDamping` | new | `18` | Turn rate per second: a turn is 90% done in about 130 ms (v1: instant). |
+| `render.reserveShiftMs` | `160` | `160` | Same length, now eased instead of linear. |
+| `render.reserveShiftStaggerMs` | `60` | `60` | Same stagger; the first shift now also waits for the departing unit. |
+| `render.slotColors.occupied` | `0x777777` | removed | Moving units no longer hold a slot. |
+| `inventory.activeSlots` | `5` | `5` | Same number, now a limit on units moving plus units parked. |
+
 ## v3 – Polish
