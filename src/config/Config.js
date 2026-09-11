@@ -8,6 +8,32 @@
  * Units of measure: distances are CELL UNITS (one grid cell = 1); durations are SECONDS, except keys ending in Ms
  * (milliseconds); speeds are cells per second. Easing keys hold a curve name from src/core/easing.js. Pixels/world units only appear in `render`.
  */
+
+/**
+ * The green pill button (Fish of Fortune): the start screen's Play button and every styled overlay button share this
+ * look, so both sections below read the same values (ui.startScreen.playButton, ui.overlays.button).
+ */
+const PILL_BUTTON = Object.freeze({
+  /** Label font size as a fraction of the button height; offsetY (em) centres the capitals on the pill. */
+  labelSize: 0.47,
+  labelOffsetY: -0.1,
+  labelColor: '#ffffff',
+  /** Outline stroke width in em (half of it shows outside the letters) and the soft drop shadow. */
+  outlineColor: '#1f5843',
+  outlineWidth: 0.17,
+  shadow: '0 0.09em 0.1em rgba(0, 0, 0, 0.45)',
+  /**
+   * The pill's own shadow on the art (CSS drop-shadow), replacing the baked one the processing removed. Lengths
+   * in em of the label size, so it scales with the button.
+   */
+  dropShadow: Object.freeze({ offsetY: 0.14, blur: 0.16, color: 'rgba(40, 26, 6, 0.5)' }),
+  hoverBrightness: 1.08,
+  /** Keyboard focus ring (px). */
+  focusColor: '#ffffff',
+  focusWidth: 3,
+  focusOffset: 2,
+});
+
 export const Config = Object.freeze({
   grid: Object.freeze({
     /** Matrix value that means "no block". */
@@ -118,22 +144,39 @@ export const Config = Object.freeze({
     layout: Object.freeze({
       designWidth: 10,
       designHeight: 20,
-      /** Grid + track. Its 0.4 margins leave room for units on the ring, which are larger than small cells. */
-      boardRegion: Object.freeze({ x: 0.4, y: 0.4, w: 9.2, h: 12 }),
+      /**
+       * Grid + track. Its margins leave room for units on the ring, which can be larger than small cells (a styled
+       * fish shrinks to fit the canal on the track, but a primitive cone keeps unitSize).
+       */
+      boardRegion: Object.freeze({ x: 0.4, y: 0.35, w: 9.2, h: 13.75 }),
       /** The 5 parking slots, centred in this band. */
-      slotsRegion: Object.freeze({ x: 0.4, y: 12.9, w: 9.2, h: 1 }),
-      /** The reserve: reserveCols columns of reserveCellSize cells, as many rows as fit (7: Carrot needs 7). */
-      reserveRegion: Object.freeze({ x: 0.4, y: 14.35, w: 9.2, h: 5.25 }),
-      /** Slot pitch; the slot tile is slotSize x render.inventory.tileScale. */
-      slotSize: 1,
+      slotsRegion: Object.freeze({ x: 0.4, y: 14.45, w: 9.2, h: 1.2 }),
+      /** The reserve: reserveCols columns of reserveCellSize cells; it shows reserveVisibleRows rows. */
+      reserveRegion: Object.freeze({ x: 0.4, y: 15.95, w: 9.2, h: 3.75 }),
+      /** Slot pitch; the flat slot tile is slotSize x render.inventory.tileScale, the glass tile slotSize. */
+      slotSize: 1.2,
       /** Reserve pitch; the reserve tile is reserveCellSize x render.inventory.tileScale. */
-      reserveCellSize: 0.75,
-      /** Unit (cone) length, the same in the reserve, in a slot and on the track. */
-      unitSize: 0.6,
-      /** Capacity label height. */
-      labelSize: 0.45,
+      reserveCellSize: 1.25,
+      /**
+       * Reserve rows drawn: only units in the first reserveVisibleRows rows of a column are shown (deeper ones are
+       * hidden and never picked). When a column moves up, the unit entering the last row slides in from
+       * render.reserveEnterOffset cells below while it fades in. Fewer rows leave room for bigger fish and board.
+       */
+      reserveVisibleRows: 3,
+      /**
+       * Unit length in the reserve and in a slot, identical on every level. On the track a styled fish shrinks to fit
+       * the canal (render.models.fish.canalFit) and grows back when it returns; a primitive cone keeps this length.
+       */
+      unitSize: 1,
+      /**
+       * Capacity number size: the digits' height as a fraction of the unit's width (the fish seen from above), so the
+       * fish reads bigger than its number. Only the text size: the capacity itself is untouched.
+       */
+      labelFontScale: 0.45,
+      /** Smallest digit height (design units), for a fish shrunk to fit a small board's canal. */
+      labelMinHeight: 0.2,
       /** "N/5" counter centre and text height (width follows render.slotCounter's canvas aspect). */
-      counter: Object.freeze({ x: 8.3, y: 13.4, height: 0.55 }),
+      counter: Object.freeze({ x: 8.85, y: 15.05, height: 0.6 }),
       /** Largest board cell, so small levels do not blow up (0.75: a unit is 0.8 of a cell, as before). */
       maxCellSize: 0.75,
     }),
@@ -165,6 +208,30 @@ export const Config = Object.freeze({
       /** Slot / reserve tile edge as a fraction of layout.slotSize / layout.reserveCellSize. */
       tileScale: 0.9,
     }),
+    /**
+     * Styled slots (Fish of Fortune): the glass tile as a textured plane, layout.slotSize wide, one shared texture and a
+     * material per status (the tint multiplies the tile; blocked = a parked unit holds it). Flat slotColors if it fails.
+     */
+    slotTile: Object.freeze({ url: 'assets/ui/hud/slot_tile.png', tint: Object.freeze({ free: 0xffffff, blocked: 0xff8a8a }) }),
+    /**
+     * Gameplay background art (Fish of Fortune), drawn beneath the scene: contained in the portrait design frame (never
+     * stretched) over a blurred, darkened cover copy of itself. It replaces the per-level flat backgrounds, which stay
+     * as the fallback if it fails to load. frame: the painted frame's rect as fractions of the image (x, y, w, h).
+     */
+    backgroundArt: Object.freeze({
+      url: 'assets/ui/gameplay_bg.webp',
+      frame: Object.freeze([0.26, 0.355, 0.475, 0.265]),
+      backdrop: Object.freeze({ blurPx: 18, brightness: 0.55, saturate: 1.1, scale: 1.1, color: '#0b2a3d' }),
+      /** Where the blurred copy shows beside the art, the art's edge fades into it over this fraction of its size. */
+      edgeFade: 0.04,
+    }),
+    /**
+     * Translucent panel behind the board (grid + canal) over the background art, so the blocks read and the painted
+     * frame's edges stay quiet under it. A mid-tone, like v3's level backgrounds: over the art under a board it keeps
+     * both black and white blocks above 3:1 contrast on 95% of the area (a dark panel drops black to 1.6:1).
+     * padding and radius in design units.
+     */
+    boardPanel: Object.freeze({ color: 0x3d7896, opacity: 0.75, radius: 0.35, padding: 0.3 }),
     /** Physically based (three r155+): lit diffuse ~ colour x intensity / PI, so ~2 + ~1.5 keeps palette colours true. */
     lights: Object.freeze({
       ambient: 0xffffff,
@@ -176,12 +243,16 @@ export const Config = Object.freeze({
     /** The "chomper": a cone lying on its side, apex = heading. */
     unit: Object.freeze({ radialSegments: 3, coneRadiusFactor: 0.45 }),
     /** Capacity number drawn on a CanvasTexture sprite above each unit. */
+    /**
+     * Capacity number: Titan One (loaded before the UI mounts) in white with a dark outline, drawn on the unit's own
+     * canvas only when the number changes. Its size comes from layout.labelFontScale.
+     */
     label: Object.freeze({
       canvasSize: 64,
-      font: 'bold 42px system-ui, sans-serif',
+      font: '40px "Titan One", system-ui, sans-serif',
       color: '#ffffff',
-      outline: '#000000',
-      outlineWidth: 8,
+      outline: '#10202c',
+      outlineWidth: 9,
       /** World height above the ground (top-down, so it only keeps the label above the meshes). */
       yOffset: 1.5,
     }),
@@ -201,6 +272,12 @@ export const Config = Object.freeze({
      *  starting reserveShiftStaggerMs after the unit ahead (the departing unit first) and never closer than one cell. */
     reserveShiftMs: 160,
     reserveShiftStaggerMs: 60,
+    /**
+     * A unit entering the last visible reserve row (layout.reserveVisibleRows) starts reserveEnterOffset cells below it
+     * and moves up while it fades in, over reserveEnterMs (motionEasing), a stagger after the unit ahead of it.
+     */
+    reserveEnterOffset: 0.5,
+    reserveEnterMs: 260,
     /** One curve for every eased move: launch and relaunch flight, return to a slot, reserve shift. */
     motionEasing: 'easeOutCubic',
     /** Launch flight shape: world units the flight first lifts off its start (clear of the reserve row it leaves)... */
@@ -335,6 +412,82 @@ export const Config = Object.freeze({
       }),
     }),
     /**
+     * Styled 3D models (Fish of Fortune, step 1: the fish units and the track). GLBs in public/assets/models, exported
+     * from the artist's .blend files by npm run export:models (tools/blender/export_glb.py, tools/blender/models.json)
+     * and drawn by src/render/StyledFactory.js. A model that fails to load falls back to its primitive.
+     */
+    models: Object.freeze({
+      fish: Object.freeze({
+        url: 'assets/models/fish.glb',
+        /** Size factor on the bounding-box normalisation: a fish is render.layout.unitSize x scale long, nose to tail... */
+        scale: 1,
+        /** ...unless that is too wide for the one-cell canal: its width is then held at canalFit x cellSize. */
+        canalFit: 0.8,
+        /** Yaw (degrees) that turns the model to face +X, every unit's heading axis (the model faces -X). */
+        rotationOffset: 180,
+        /** World units added to the unit's height (render.unitHeight). */
+        yOffset: 0,
+        /** Materials that take the unit's palette colour, through one shared material per colour. */
+        tintMaterialNames: Object.freeze(['M_Fish_Clean']),
+        /**
+         * Tone-map the tinted fish with render.lighting.toneMapping (true) or not (false). Off: a fish's body shows its
+         * palette colour as the blocks do (AgX dulls saturated colours: a #f50f3c fish rendered #b03e3f). The track,
+         * whose colours come from the .blend, stays tone-mapped like Blender's AgX view.
+         */
+        toneMapped: false,
+        /**
+         * Midtone tint (src/render/styled/fishTint.js); luminances are linear. The texture body (bodyLuminance) takes
+         * exactly the palette colour, darker details stay darker, and the tint fades out between highlightStart and
+         * highlightEnd so eye whites and fins stay light. minLuminance lifts black a little; the rim (strength, power)
+         * darkens light fish and lights dark ones at their outline, switching at rimSwitch (palette luminance).
+         */
+        tint: Object.freeze({
+          strength: 1, bodyLuminance: 0.22, highlightStart: 0.35, highlightEnd: 0.75, minLuminance: 0.02,
+          rim: 0.35, rimPower: 2.5, rimSwitch: 0.35, rimLight: 0xffffff, rimDark: 0x0b2233,
+        }),
+        /** glTF clip names: Swim while a unit moves, Idle in the reserve and slots, cross-faded over fadeMs. */
+        animations: Object.freeze({ swim: 'Fish_Swim', idle: 'Fish_Idle', fadeMs: 200, swimSpeed: 1, idleSpeed: 1 }),
+      }),
+      track: Object.freeze({
+        straightUrl: 'assets/models/track_straight.glb',
+        cornerUrl: 'assets/models/track_corner.glb',
+        chevronUrl: 'assets/models/track_chevron.glb',
+        /**
+         * Blender's transmission (water 0.45, outer rim 0.25) as plain transparency: opacity = 1 - transmission x
+         * transmissionWeight. 0.65 matches the Blender reference render (tools/blender/render_reference.py): water
+         * #8eb5c4 vs #94b5bd, rim #88adbb vs #8badb8. At 1 the canal bed shows through too much and both read darker.
+         */
+        transmissionAsOpacity: true,
+        transmissionWeight: 0.65,
+        /**
+         * The entry corner's instance colour (it multiplies that corner's materials; 0xffffff = no tint): a cool,
+         * slightly darker corner like v3's entry tile, about 25 levels darker than the other corners.
+         */
+        entryTint: 0xb4c8dc,
+        /**
+         * Flow chevrons, as in Fish_Rail.blend: one every `spacing` cells along the canal's centre line, moving one
+         * spacing per periodMs in the travel direction (0.6 m every 48 frames at 24 fps); corners rounded to
+         * cornerRadius cells, like the rail's path.
+         */
+        chevrons: Object.freeze({ spacing: 0.481, periodMs: 2000, cornerRadius: 0.382 }),
+      }),
+    }),
+    /**
+     * Lights for the GLB models only. The Renderer draws the models (on `layer`) in a first pass under these lights and
+     * this tone mapping, then everything else in a second pass under render.lights with no tone mapping, so blocks,
+     * tiles, slots and labels look exactly as in v3. Taken from Fish_Rail.blend: its Sun (4.2 W/m², warm, from the
+     * south and above; +Z is the board's south), and its AquaWorld ambient (0.07, 0.1, 0.14) plus its blue fill light
+     * folded into the hemisphere's sky. toneMapping 'agx' matches the AgX view transform both .blend files use; 'none'
+     * turns it off.
+     */
+    lighting: Object.freeze({
+      layer: 1,
+      toneMapping: 'agx',
+      exposure: 1,
+      hemisphere: Object.freeze({ sky: 0xa1bfd9, ground: 0x8198b1, intensity: 1 }),
+      directional: Object.freeze({ color: 0xfffdf6, intensity: 4.2, position: Object.freeze([-0.161, 0.641, 0.751]) }),
+    }),
+    /**
      * Per-level presentation overrides keyed by level id (merged over the defaults above). Level files in
      * src/core/levels stay pure: colour ids there are only numbers, and their meaning lives here.
      */
@@ -370,7 +523,6 @@ export const Config = Object.freeze({
   ui: Object.freeze({
     text: Object.freeze({
       level: 'Level',
-      currency: '$',
       settings: 'Settings',
       paused: 'Paused',
       resume: 'Resume',
@@ -387,6 +539,12 @@ export const Config = Object.freeze({
       playAgain: 'Play again',
       lost: 'Out of space',
       retry: 'Retry',
+      /** Styled overlays (ui.overlays): titles and subtitles as drawn; the buttons use the labels above, in capitals. */
+      pauseTitle: 'PAUSED',
+      winTitle: 'VICTORY!',
+      winSubtitle: 'LEVEL CLEAR!',
+      loseTitle: 'DEFEAT!',
+      loseSubtitle: 'Out of Space!',
     }),
     colors: Object.freeze({
       text: '#ffffff',
@@ -465,6 +623,191 @@ export const Config = Object.freeze({
     }),
     /** Opacity of the settings button while it cannot be used (level over). */
     disabledOpacity: 0.35,
+    /**
+     * Styled start screen (Fish of Fortune): the key art with the painted title, and a Play button made from an image
+     * (both from tools/ui, npm run process:ui). main.js loads them and the label font before the UI mounts; if any of
+     * the three fails, the console names the file and the flat v3 start screen above (text.title, sizes.start*) is used.
+     * text.title stays the document title and the screen's aria-label; it is not drawn over the art.
+     */
+    startScreen: Object.freeze({
+      background: 'assets/ui/start_bg.webp',
+      button: 'assets/ui/button_green.png',
+      /** Self-hosted (OFL, public/assets/fonts/TitanOne-OFL.txt); fallback only matters if the font fails mid-session. */
+      font: Object.freeze({ family: 'Titan One', url: 'assets/fonts/TitanOne-Regular-latin.woff2', fallback: 'system-ui, sans-serif' }),
+      /**
+       * The art is contained in the viewport (all of it visible, never cropped or stretched). The space around it shows
+       * the same image cover-fitted, blurred (px) and darkened; scale hides the blur's soft edge. color shows first.
+       */
+      backdrop: Object.freeze({ blurPx: 18, brightness: 0.55, saturate: 1.1, scale: 1.1, color: '#0b2a3d' }),
+      /** The pill's look is PILL_BUTTON (shared with the overlay buttons). */
+      playButton: Object.freeze({
+        /** Anchored to the displayed art: centre and width are fractions of the image rect (over the sand). */
+        centerX: 0.5,
+        centerY: 0.875,
+        widthPct: 0.46,
+        ...PILL_BUTTON,
+        /** Idle breathing: scale up to pulseScale and back once per pulsePeriodMs (off with reduced effects). */
+        pulseScale: 1.04,
+        pulsePeriodMs: 1600,
+      }),
+    }),
+    /**
+     * Styled HUD (Fish of Fortune): settings button top-left, level bar centred, coin bar top-right with the coin over
+     * its left end, as in the HUD sheet. Lengths are design units, so the HUD scales with the design frame and is the
+     * same on every level and viewport. main.js loads the images (decoded) with the label font before the UI mounts; if
+     * one fails, the console names it and the flat v3 bar (colors.bar, sizes.barHeight) is used. Both bars are static
+     * containers: only their text changes.
+     */
+    hud: Object.freeze({
+      /** Height of the HUD band above the design frame; the board stays below it. */
+      band: 1.4,
+      /** Distance of the settings button and the coin bar from the viewport's sides. */
+      padding: 0.3,
+      settings: Object.freeze({ url: 'assets/ui/hud/settings_button.png', size: 1.15 }),
+      /**
+       * The level bar. aspect is the image's width / height and height its size, so a replacement file only needs
+       * these two values changed.
+       */
+      levelBar: Object.freeze({ url: 'assets/ui/hud/level_bar.png', aspect: 419 / 143, height: 0.95 }),
+      coinBar: Object.freeze({ url: 'assets/ui/hud/coin_bar.png', aspect: 306 / 143, height: 0.95 }),
+      /** The coin over the coin bar's left end: centre as fractions of the bar image, width x the bar height. */
+      coin: Object.freeze({ url: 'assets/ui/hud/coin_icon.png', centerX: -0.0218, centerY: 0.495, size: 1.2448 }),
+      /**
+       * Text in the bars, styled like the Play button: font size as a fraction of the bar height, offsetY (em) to centre
+       * the capitals, outline stroke width in em (half of it shows). insets: the text box's left and right edges as
+       * fractions of the bar width (the coin covers the coin bar's left part); the text shrinks to fit its box.
+       */
+      text: Object.freeze({
+        size: 0.44,
+        offsetY: -0.08,
+        color: '#ffffff',
+        outlineColor: '#0b3550',
+        outlineWidth: 0.17,
+        shadow: '0 0.08em 0.1em rgba(0, 0, 0, 0.45)',
+        levelInsets: Object.freeze([0.1, 0.1]),
+        coinInsets: Object.freeze([0.36, 0.1]),
+      }),
+      /** Soft shadow under the HUD pieces (the sheet has none baked), in design units. */
+      dropShadow: Object.freeze({ offsetY: 0.05, blur: 0.08, color: 'rgba(0, 20, 40, 0.45)' }),
+      /** Keyboard focus ring on the settings button (px). */
+      focusColor: '#ffffff',
+      focusWidth: 3,
+      focusOffset: 2,
+      /** The settings button above the pause panel's backdrop: a static ring around it (CSS box-shadow). */
+      raisedRing: '0 0 0 3px rgba(255, 255, 255, 0.9), 0 0 14px 5px rgba(120, 200, 255, 0.75)',
+    }),
+    /**
+     * Styled overlays (Fish of Fortune): the settings (pause), win and lose panels of the Photoshop artboard mockups
+     * (assets/ui/source/overlays). The glass panel, the dim, every title and label are CSS; the big coin and the sad
+     * block are cut from the mockups by tools/ui (npm run process:ui), and the buttons are the Play button's pill
+     * (PILL_BUTTON). main.js loads the two images (decoded) with the button image and the font; if one fails, the console
+     * names it and the flat v3 cards (colors, sizes above) are used. Lengths are artboard px: the artboard's width maps
+     * onto the design frame's width and its centre onto the frame's centre (layout/computeOverlayLayout.js), so the
+     * overlays scale with the frame like the HUD. Items are placed by their centre (x, y); x defaults to the panel's.
+     */
+    overlays: Object.freeze({
+      coin: 'assets/ui/overlays/coin_big.png',
+      sadBlock: 'assets/ui/overlays/sad_block.png',
+      artboard: Object.freeze({ width: 800, height: 1280 }),
+      /** Dim over the game and the HUD, with no blur (no backdrop-filter); the raised HUD piece stays above it. */
+      backdrop: 'rgba(8, 18, 26, 0.64)',
+      panel: Object.freeze({
+        x: 136,
+        y: 315,
+        width: 528,
+        height: 656,
+        radius: 46,
+        /**
+         * The glass, without backdrop-filter: a translucent vertical gradient (a light top edge, then the body), a light
+         * outer line (border, rimWidth), a dark band inside it (rimDark, the same width) and a soft light band inside
+         * that (glow: an inset shadow glowWidth deep, glowBlur soft), and a glint on the top-left rim.
+         */
+        fill: 'linear-gradient(180deg, rgba(152, 182, 216, 0.94) 0%, rgba(140, 166, 199, 0.93) 3%, rgba(130, 152, 182, 0.91) 21%, rgba(128, 148, 178, 0.9) 100%)',
+        rimWidth: 4,
+        rimLight: '#86b3de',
+        rimDark: '#527ea9',
+        glow: 'rgba(160, 186, 218, 0.75)',
+        glowWidth: 5,
+        glowBlur: 12,
+        glint: Object.freeze({ x: 48, y: 9, width: 28, height: 7, color: 'rgba(255, 255, 255, 0.8)' }),
+      }),
+      /** Every button: the Play button's pill and label (PILL_BUTTON) this wide, in capitals, shrunk to fit labelMaxWidth. */
+      button: Object.freeze({ width: 350, labelMaxWidth: 0.78 }),
+      /**
+       * Titan One throughout. Font sizes are artboard px; outlines are the stroke width in em (half of it shows outside
+       * the letters); shadows are CSS text-shadows in em. capCenter: em from the top of a one-line text box (line-height
+       * 1) to the middle of the capitals (ascent 0.97, descent 0.175, cap height 0.71), so texts are placed by the middle
+       * of their capitals. A text wider than maxWidth x the panel shrinks to fit.
+       */
+      typography: Object.freeze({
+        capCenter: 0.5425,
+        maxWidth: 0.9,
+        /** Titles: a light-to-mid blue gradient (with a lighter band near the top of the capitals) over a thick dark outline. */
+        title: Object.freeze({
+          size: 93,
+          fill: 'linear-gradient(180deg, #d4effd 19%, #f0fbff 27%, #c3e4fb 36%, #62a9ea 90%)',
+          outlineColor: '#183e7c',
+          outlineWidth: 0.15,
+          shadow: '0 0.06em 0.05em rgba(0, 20, 50, 0.55)',
+        }),
+        subtitle: Object.freeze({ size: 41, color: '#d4dcfe', outlineColor: '#3a4668', outlineWidth: 0.1, shadow: '0 0.05em 0.05em rgba(0, 20, 50, 0.35)' }),
+        /** The reward "+X", on the win card and flying to the HUD coin (the only reward style). */
+        reward: Object.freeze({ size: 37, color: '#ffeca0', outlineColor: '#7a420c', outlineWidth: 0.18, shadow: '0 0.06em 0.06em rgba(40, 20, 0, 0.5)' }),
+      }),
+      titleY: 398,
+      subtitleY: 488,
+      /** Settings: three buttons of button.width, their centres this far down the artboard (the same gap between them). */
+      pause: Object.freeze({ buttonsY: Object.freeze([590, 718, 846]) }),
+      /**
+       * Win: the big coin (image width), the reward under it, the button. The coin pops in, then bobs (off with reduced
+       * effects). The coin is 7 % smaller than in the mockup and the button 6 px lower, so the reward the mockup has no
+       * room for fits between them with even gaps.
+       */
+      win: Object.freeze({
+        coin: Object.freeze({ x: 398, y: 650, width: 214 }),
+        rewardY: 784,
+        buttonY: 870,
+        bobPx: 6,
+        bobPeriodMs: 2400,
+        popFromScale: 0.3,
+      }),
+      /**
+       * Lose: the sad block (image width) in a glass bubble (CSS: radial-gradient body, an outer glow and two highlight
+       * arcs, as fractions of its size), small floating bubbles around it ([dx, dy, radius] in bubble radii, light or
+       * dark), the button. The bubble and block float gently (off with reduced effects).
+       */
+      lose: Object.freeze({
+        bubble: Object.freeze({
+          x: 401,
+          y: 660,
+          size: 218,
+          fill: 'radial-gradient(circle closest-side, rgba(170, 214, 255, 0.59) 0%, rgba(165, 210, 252, 0.47) 60%, rgba(175, 218, 255, 0.43) 86%, rgba(200, 232, 255, 0.67) 93%, rgba(228, 245, 255, 0.92) 97%, rgba(228, 245, 255, 0) 100%)',
+          glow: 'rgba(150, 205, 255, 0.35)',
+          glowBlur: 18,
+          arcs: Object.freeze([
+            Object.freeze({ inset: 0.1, width: 0.028, angle: -47, color: 'rgba(255, 255, 255, 0.82)' }),
+            Object.freeze({ inset: 0.1, width: 0.022, angle: 132, color: 'rgba(255, 255, 255, 0.55)' }),
+          ]),
+        }),
+        block: Object.freeze({ x: 400, y: 660, width: 166 }),
+        floating: Object.freeze([
+          Object.freeze([-1.33, -0.51, 0.13, 'light']),
+          Object.freeze([-1.16, -0.34, 0.04, 'light']),
+          Object.freeze([1.26, -0.43, 0.1, 'light']),
+          Object.freeze([-1.04, -0.92, 0.08, 'dark']),
+          Object.freeze([1.11, -0.87, 0.2, 'light']),
+          Object.freeze([-1.21, 0.73, 0.19, 'dark']),
+          Object.freeze([1.05, 0.86, 0.13, 'dark']),
+        ]),
+        smallFill: Object.freeze({
+          light: 'radial-gradient(circle closest-side, rgba(180, 215, 250, 0.16) 0%, rgba(190, 225, 255, 0.24) 70%, rgba(220, 240, 255, 0.75) 88%, rgba(220, 240, 255, 0) 100%)',
+          dark: 'radial-gradient(circle closest-side, rgba(40, 48, 58, 0.78) 0%, rgba(60, 70, 82, 0.82) 75%, rgba(150, 165, 185, 0.78) 90%, rgba(150, 165, 185, 0) 100%)',
+        }),
+        buttonY: 864,
+        floatPx: 5,
+        floatPeriodMs: 2600,
+      }),
+    }),
   }),
 
   debug: Object.freeze({
@@ -476,6 +819,10 @@ export const Config = Object.freeze({
      * renderer.info.memory in a small panel.
      */
     enabled: false,
+    /** ?debug (any value but 0 / false) shows the debug panel in any build, for profiling the production bundle. */
+    panelParam: 'debug',
+    /** Frames the panel's frame statistics cover (avg, p95): 240 = the last 4 s at 60 fps. */
+    frameWindow: 240,
     /** Scales the time fed to the simulation and the effects (1 = real time; 0.25 = slow motion). The DOM UI is unaffected. */
     timeScale: 1,
     /** Outline colours (drawn on top of everything). */

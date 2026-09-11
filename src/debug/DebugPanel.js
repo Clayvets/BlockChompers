@@ -53,16 +53,27 @@ export function layoutDebugEntries(layout, snapshot) {
 }
 
 /**
- * Panel lines for performance: FPS, draw calls, active effect instances, GPU memory (renderer.info.memory) and, with
- * AudioManager.stats(), the sound voices playing (live = voices whose nodes are still connected).
+ * Panel lines for performance.
+ *   frame    FrameStats.summary(): fps, frame interval avg / p95 / max, main-thread work split into simulation, render
+ *            (sync + draw + confetti) and UI (DOM)
+ *   stats    Renderer.getStats(): draw calls, triangles, GPU memory and shader programs, active effect instances
+ *   confetti ConfettiLayer.stats(); audio AudioManager.stats() (live = voices whose nodes are still connected)
+ *   ui       UIManager.stats(): tweens and Web Animations running; probe RuntimeProbe.stats(): heap, GC, long tasks
  */
-export function statsDebugEntries(fps, stats, confetti, audio = null) {
+export function statsDebugEntries({ frame, stats, confetti, audio = null, ui = null, probe = null }) {
+  const ms = (v) => v.toFixed(1);
   const entries = [
-    ['fps', fps.toFixed(0)],
-    ['draw calls', `${stats.calls}${confetti.calls ? ` + ${confetti.calls} confetti` : ''}`],
+    ['fps', `${frame.fps.toFixed(0)}  frame avg ${ms(frame.frameAvg)} ms, p95 ${ms(frame.frameP95)}, max ${ms(frame.frameMax)}`],
+    ['work', `${ms(frame.workAvg)} ms (p95 ${ms(frame.workP95)}): sim ${ms(frame.simAvg)}, render ${ms(frame.renderAvg)}, ui ${ms(frame.uiAvg)}`],
+    ['draw calls', `${stats.calls}${confetti.calls ? ` + ${confetti.calls} confetti` : ''}, triangles ${stats.triangles}`],
+    ['gpu', `geometries ${stats.geometries}, textures ${stats.textures}, programs ${stats.programs}`],
     ['particles', `${stats.particles} (projectiles ${stats.projectiles}, blocks ${stats.blocks}, confetti ${confetti.confetti})`],
-    ['memory', `geometries ${stats.geometries}, textures ${stats.textures}`],
   ];
+  if (ui) entries.push(['tweens', `${ui.tweens} (web animations ${ui.animations})`]);
   if (audio) entries.push(['voices', `${audio.voices}/${audio.max} (live ${audio.live}, ${audio.state})`]);
+  if (probe) {
+    entries.push(['heap', `${probe.heapMB.toFixed(1)} MB (+${probe.allocMBps.toFixed(2)} MB/s), gc ${probe.gcDrops}`]);
+    entries.push(['long tasks', `${probe.longTasks}${probe.longTasks ? ` (max ${probe.longestTask.toFixed(0)} ms)` : ''}`]);
+  }
   return entries;
 }

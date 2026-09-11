@@ -1,27 +1,22 @@
-import * as THREE from 'three';
 import { Pool } from '../anim/Pool.js';
 
-const _m = new THREE.Matrix4();
-const _q = new THREE.Quaternion();
-const _e = new THREE.Euler();
-const _p = new THREE.Vector3();
-const _s = new THREE.Vector3();
-const _c = new THREE.Color();
-
 /**
- * Win confetti, drawn on its own transparent canvas ABOVE the DOM, so it rains over the win card. One InstancedMesh of
- * flat rectangles (VfxFactory.confetti) in the level palette; they burst from the bottom corners, flip, sway, fall and
- * fade. Units are CSS pixels (y down on screen). Presentation only: burst() / stop() come from the UI's win overlay,
- * and update(dtMs) from the frame loop. While nothing flies it does not render at all (0 draw calls).
+ * Win confetti, drawn on its own transparent canvas ABOVE the DOM (#canvas-fx), so it rains over the win overlay: flat
+ * rectangles in the level palette that burst from the bottom corners, flip, sway, fall and fade. A 2D canvas (not a
+ * second WebGL context) with a fixed Pool of render.vfx.maxConfetti pieces. Each piece is its rectangle turned in 3D
+ * (rx, ry, rz, Euler XYZ) and seen straight on (orthographic): the canvas transform is the rotation matrix's x and y
+ * rows, so it flips exactly as the WebGL quads did. Units are CSS px, y down. Presentation only: burst() / stop() come
+ * from the UI's win overlay and update(dtMs) from the frame loop; it allocates nothing per frame (colours are strings
+ * made at burst time) and, while nothing flies, does not touch the canvas.
  */
 export class ConfettiLayer {
-  constructor({ canvas, config, factory }) {
+  constructor({ canvas, config }) {
     this.canvas = canvas;
     this.config = config;
+    this.ctx = null;
     this.reduced = false;
     this.clock = 0;
     const cap = config.render.vfx.maxConfetti;
-    this.mesh = factory.confetti(cap);
     this._pool = new Pool(cap);
     this._x = new Float32Array(cap); this._y = new Float32Array(cap);
     this._vx = new Float32Array(cap); this._vy = new Float32Array(cap);
@@ -29,28 +24,23 @@ export class ConfettiLayer {
     this._wx = new Float32Array(cap); this._wy = new Float32Array(cap); this._wz = new Float32Array(cap);
     this._w = new Float32Array(cap); this._h = new Float32Array(cap);
     this._t0 = new Float64Array(cap); this._life = new Float32Array(cap); this._phase = new Float32Array(cap);
-    this._rgb = new Float32Array(cap * 3);
+    this._fill = new Array(cap).fill('#ffffff');
     this._stopAt = -1;
-    this._dirty = false;
+    this._drawn = false;
     this._size = { width: 1, height: 1 };
+    this._ratio = 1;
   }
 
   init() {
-    this.gl = new THREE.WebGLRenderer({ canvas: this.canvas, alpha: true, antialias: true, premultipliedAlpha: true });
-    this.gl.setClearColor(0x000000, 0);
-    this.scene = new THREE.Scene();
-    this.camera = new THREE.OrthographicCamera(0, 1, 0, -1, -100, 100);
-    this.scene.add(this.mesh);
+    this.ctx = this.canvas.getContext('2d');
   }
 
   resize(width, height) {
     this._size = { width: Math.max(1, width), height: Math.max(1, height) };
-    if (!this.gl) return;
-    this.gl.setPixelRatio(Math.min(globalThis.devicePixelRatio || 1, this.config.render.pixelRatioMax));
-    this.gl.setSize(this._size.width, this._size.height);
-    Object.assign(this.camera, { left: 0, right: this._size.width, top: 0, bottom: -this._size.height });
-    this.camera.updateProjectionMatrix();
-    this._dirty = true;
+    this._ratio = Math.min(globalThis.devicePixelRatio || 1, this.config.render.pixelRatioMax);
+    this.canvas.width = Math.round(this._size.width * this._ratio);
+    this.canvas.height = Math.round(this._size.height * this._ratio);
+    this._drawn = true; // resizing cleared it; redraw what flies on the next update
   }
 
   setReduced(reduced) {
@@ -66,6 +56,7 @@ export class ConfettiLayer {
     const c = this.config.render.vfx.confetti;
     const count = this.reduced ? Math.max(1, Math.round(c.count * this.config.render.vfx.reducedScale)) : c.count;
     const { width, height } = this._size;
+    const fills = colors.map((hex) => `#${hex.toString(16).padStart(6, '0')}`);
     this._stopAt = -1;
     for (let n = 0; n < count; n += 1) {
       const left = n % 2 === 0;
@@ -84,10 +75,8 @@ export class ConfettiLayer {
       this._t0[s] = this.clock;
       this._life[s] = c.durationMs * (0.7 + 0.3 * Math.random());
       this._phase[s] = Math.random() * Math.PI * 2;
-      _c.setHex(colors[n % colors.length]);
-      this._rgb[s * 3] = _c.r; this._rgb[s * 3 + 1] = _c.g; this._rgb[s * 3 + 2] = _c.b;
+      this._fill[s] = fills[n % fills.length];
     }
-    this._dirty = true;
   }
 
   /** Fade everything out quickly (the win overlay closed). */
@@ -99,7 +88,6 @@ export class ConfettiLayer {
   clear() {
     this._pool.clear();
     this._stopAt = -1;
-    this._dirty = true;
   }
 
   update(dtMs) {
@@ -109,7 +97,6 @@ export class ConfettiLayer {
     const stopping = this._stopAt >= 0;
     const stopFade = stopping ? Math.max(0, 1 - (this.clock - this._stopAt) / c.stopFadeMs) : 1;
     if (stopping && stopFade === 0) this._pool.clear();
-    const opacity = this.mesh.geometry.attributes.instanceOpacity;
     for (let k = this._pool.count - 1; k >= 0; k -= 1) {
       const s = this._pool.active[k];
       const age = this.clock - this._t0[s];
@@ -124,36 +111,44 @@ export class ConfettiLayer {
       this._y[s] += this._vy[s] * dt;
       this._rx[s] += this._wx[s] * dt; this._ry[s] += this._wy[s] * dt; this._rz[s] += this._wz[s] * dt;
     }
-    for (let k = 0; k < this._pool.count; k += 1) {
+    const count = this._pool.count;
+    if (count === 0) this._stopAt = -1;
+    const ctx = this.ctx;
+    if (!ctx || (count === 0 && !this._drawn)) return; // idle: the canvas is already clear
+    const r = this._ratio;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    for (let k = 0; k < count; k += 1) {
       const s = this._pool.active[k];
       const age = this.clock - this._t0[s];
       const sway = Math.sin(this._phase[s] + age * 0.004) * c.sway;
-      _p.set(this._x[s] + sway, -this._y[s], 0);
-      _q.setFromEuler(_e.set(this._rx[s], this._ry[s], this._rz[s]));
-      _s.set(this._w[s], this._h[s], 1);
-      this.mesh.setMatrixAt(k, _m.compose(_p, _q, _s));
-      this.mesh.setColorAt(k, _c.setRGB(this._rgb[s * 3], this._rgb[s * 3 + 1], this._rgb[s * 3 + 2]));
-      opacity.array[k] = Math.min(1, (this._life[s] - age) / c.fadeMs) * stopFade;
+      // Rotation matrix of Euler XYZ, first two columns' x and y rows (a = cos x, b = sin x, ...). World y is up in the
+      // quad's frame and down on screen, hence the minus on the y row.
+      const a = Math.cos(this._rx[s]); const b = Math.sin(this._rx[s]);
+      const cy = Math.cos(this._ry[s]); const d = Math.sin(this._ry[s]);
+      const e = Math.cos(this._rz[s]); const f = Math.sin(this._rz[s]);
+      const w = this._w[s] * r;
+      const h = this._h[s] * r;
+      ctx.setTransform(cy * e * w, -(a * f + b * e * d) * w, -cy * f * h, -(a * e - b * f * d) * h, (this._x[s] + sway) * r, this._y[s] * r);
+      ctx.globalAlpha = Math.min(1, (this._life[s] - age) / c.fadeMs) * stopFade;
+      ctx.fillStyle = this._fill[s];
+      ctx.fillRect(-0.5, -0.5, 1, 1);
     }
-    const count = this._pool.count;
-    if (count === 0 && this.mesh.count === 0 && !this._dirty) return; // idle: nothing to draw, no draw calls
-    this.mesh.count = count;
-    this.mesh.instanceMatrix.needsUpdate = true;
-    this.mesh.instanceColor.needsUpdate = true;
-    opacity.needsUpdate = true;
-    if (count === 0) this._stopAt = -1;
-    if (this.gl) this.gl.render(this.scene, this.camera);
-    this._dirty = false;
+    ctx.globalAlpha = 1;
+    this._drawn = count > 0;
   }
 
-  /** Draw calls of the last rendered frame (0 while idle). */
+  /** Pieces in flight; confetti costs no WebGL draw calls. */
   stats() {
-    return { confetti: this._pool.count, calls: this._pool.count > 0 && this.gl ? this.gl.info.render.calls : 0 };
+    return { confetti: this._pool.count, calls: 0 };
   }
 
   dispose() {
     this.clear();
-    if (this.gl) this.gl.dispose();
-    this.gl = null;
+    if (this.ctx) {
+      this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+      this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    }
+    this.ctx = null;
   }
 }

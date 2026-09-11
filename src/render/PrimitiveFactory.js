@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { FreeLists } from './anim/FreeLists.js';
 
 const LAY_FLAT = -Math.PI / 2;
 /** thetaStart that centres an odd-sided cone base on the heading axis (symmetric footprint from above). */
@@ -23,6 +24,8 @@ export class PrimitiveFactory {
     this.layout = config.render.layout;
     /** Shared geometries/materials keyed by descriptor, disposed in dispose(). */
     this._cache = new Map();
+    /** Transparent copies for unit fades, per shared material (see setUnitOpacity), disposed in dispose(). */
+    this._fades = new FreeLists();
     this.setStyle({});
   }
 
@@ -69,12 +72,27 @@ export class PrimitiveFactory {
     return this.#cached(`tile:${edge}`, () => new THREE.PlaneGeometry(edge, edge).rotateX(LAY_FLAT));
   }
 
+  #blockGeometry() {
+    const { gap, blockHeight } = this.render;
+    return this.#cached('block', () => new THREE.BoxGeometry(1 - gap, blockHeight, 1 - gap));
+  }
+
   /** A grid block for a 1 x 1 cell: BoxGeometry(1 - gap, blockHeight, 1 - gap) x palette[color]; scale it by cellSize. */
   block(color, row, col) {
-    const { gap, blockHeight } = this.render;
-    const geometry = this.#cached('block', () => new THREE.BoxGeometry(1 - gap, blockHeight, 1 - gap));
-    const mesh = new THREE.Mesh(geometry, this.#lit(this.#hex(color)));
+    const mesh = new THREE.Mesh(this.#blockGeometry(), this.#lit(this.#hex(color)));
     mesh.userData = { kind: 'block', id: `${row},${col}` };
+    return mesh;
+  }
+
+  /**
+   * Every block of one colour in one draw call: block()'s geometry and material as an InstancedMesh with room for
+   * `capacity` blocks and count 0; the Renderer writes each block's matrix and the count. Its instance buffers are the
+   * caller's to release (InstancedMesh.dispose(); the geometry and material stay cached).
+   */
+  blocks(color, capacity) {
+    const mesh = new THREE.InstancedMesh(this.#blockGeometry(), this.#lit(this.#hex(color)), capacity);
+    mesh.count = 0;
+    mesh.frustumCulled = false; // the board is always in view; its bounds would change with every block eaten
     return mesh;
   }
 
@@ -114,10 +132,102 @@ export class PrimitiveFactory {
     return new THREE.Mesh(this.#tileGeometry(this.render.track.tileScale), this.#flat(isEntry ? entryColor : guideColor));
   }
 
-  /** A unit's capacity label: a square text sprite styled by render.label, render.layout.labelSize high. */
+  /** Width of a unit seen from above (the cone's base), in world units: the capacity number is sized from it. */
+  unitWidth() {
+    return this.layout.unitSize * this.render.unit.coneRadiusFactor * Math.sqrt(3);
+  }
+
+  /**
+   * World height of a capacity label sprite: its digits are render.layout.labelFontScale x unitWidth() tall. The
+   * digits' share of the canvas is measured once in render.label's font (loaded before any label is drawn).
+   */
+  labelHeight() {
+    if (this._labelHeight === undefined) {
+      const { canvasSize, font } = this.render.label;
+      const ctx = document.createElement('canvas').getContext('2d');
+      ctx.font = font;
+      const m = ctx.measureText('0123456789');
+      const digits = m.actualBoundingBoxAscent + m.actualBoundingBoxDescent;
+      const target = this.layout.labelFontScale * this.unitWidth();
+      this._labelHeight = digits > 0 ? (target * canvasSize) / digits : target * 2;
+    }
+    return this._labelHeight;
+  }
+
+  /** A unit's capacity label: a square text sprite styled by render.label, labelHeight() high. */
   label(text) {
     const { canvasSize, ...style } = this.render.label;
-    return this.text(text, { ...style, canvasWidth: canvasSize, canvasHeight: canvasSize, height: this.layout.labelSize });
+    return this.text(text, { ...style, canvasWidth: canvasSize, canvasHeight: canvasSize, height: this.labelHeight() });
+  }
+
+  /**
+   * Fade a unit's meshes (not its labels) to `opacity`. Their materials are shared per colour, so below 1 each mesh
+   * borrows a transparent copy (fadeCopy) from a pool kept per shared material; back at 1 the shared one returns and
+   * the copy goes back to the pool. Copies are disposed only with the factory: three.js destroys a shader program
+   * with the last material using it, so disposing the copy after each fade made the next fade compile the transparent
+   * program again mid-game (a ~60 ms frame). The Renderer compiles the copies when a level loads (#warmFade).
+   */
+  setUnitOpacity(group, opacity) {
+    const ud = group.userData;
+    if (opacity < 1) {
+      if (!ud.fade) {
+        ud.fade = [];
+        group.traverse((object) => {
+          if (!object.isMesh || !object.visible) return;
+          const shared = object.material;
+          const copy = this._fades.take(shared, () => {
+            const made = this.fadeCopy(shared, ud.color);
+            made.transparent = true;
+            return made;
+          });
+          ud.fade.push({ mesh: object, shared, copy });
+          object.material = copy;
+        });
+      }
+      for (let i = 0; i < ud.fade.length; i += 1) ud.fade[i].copy.opacity = opacity;
+    } else if (ud.fade) {
+      for (const { mesh, shared, copy } of ud.fade) {
+        mesh.material = shared;
+        this._fades.give(shared, copy);
+      }
+      ud.fade = null;
+    }
+  }
+
+  /** A unit material's private copy for a fade (StyledFactory keeps its fish tint). */
+  fadeCopy(material) {
+    return material.clone();
+  }
+
+  /**
+   * Translucent rounded panel behind the board (render.boardPanel), `rect` plus padding, on the ground just under
+   * everything; its geometry is the caller's to dispose (Renderer.clear).
+   */
+  boardPanel({ x, y, w, h }) {
+    const { color, opacity, radius, padding } = this.render.boardPanel;
+    const x0 = x - padding;
+    const x1 = x + w + padding;
+    // Shape space is (x, -y): after rotateX(-90 deg) it lies on the ground facing up, with shape y -> world z.
+    const y0 = -(y + h + padding);
+    const y1 = -(y - padding);
+    const r = Math.min(radius, (x1 - x0) / 2, (y1 - y0) / 2);
+    const shape = new THREE.Shape();
+    shape.moveTo(x0 + r, y0);
+    shape.lineTo(x1 - r, y0);
+    shape.quadraticCurveTo(x1, y0, x1, y0 + r);
+    shape.lineTo(x1, y1 - r);
+    shape.quadraticCurveTo(x1, y1, x1 - r, y1);
+    shape.lineTo(x0 + r, y1);
+    shape.quadraticCurveTo(x0, y1, x0, y1 - r);
+    shape.lineTo(x0, y0 + r);
+    shape.quadraticCurveTo(x0, y0, x0 + r, y0);
+    const material = this.#cached(`panel:${color}:${opacity}`, () => new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity, depthWrite: false, toneMapped: false,
+    }));
+    const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape, 8).rotateX(LAY_FLAT), material);
+    mesh.position.y = -0.02;
+    mesh.renderOrder = -10;
+    return mesh;
   }
 
   /**
@@ -194,9 +304,10 @@ export class PrimitiveFactory {
     sprite.material.dispose();
   }
 
-  /** Dispose every cached geometry/material. */
+  /** Dispose every cached geometry/material and every fade copy. */
   dispose() {
     for (const resource of this._cache.values()) resource.dispose();
     this._cache.clear();
+    this._fades.clear((material) => material.dispose());
   }
 }

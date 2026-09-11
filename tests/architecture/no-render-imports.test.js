@@ -6,9 +6,12 @@ import { fileURLToPath } from 'node:url';
 /**
  * Enforces the layering rule: the logic layer must be runnable (and testable) without Three.js,
  * a DOM, a clock or randomness. Comments are stripped before matching so docs may mention these.
+ * src/ui/layout holds the UI's pure layout math (the start screen's anchoring), held to the same rule, as are the pure
+ * helpers next to presentation code: the overlays' state machine and the render-on-demand and fade-pool helpers.
  */
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
-const PURE_DIRS = ['src/core', 'src/config'];
+const PURE_DIRS = ['src/core', 'src/config', 'src/ui/layout'];
+const PURE_FILES = ['src/ui/overlays/OverlayController.js', 'src/render/RenderGate.js', 'src/render/anim/FreeLists.js'];
 
 const FORBIDDEN = [
   { name: "static import of 'three'", re: /from\s+['"]three(\/|['"])/ },
@@ -34,8 +37,8 @@ function stripComments(src) {
   return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 }
 
-describe('layering: src/core and src/config are pure', () => {
-  const files = PURE_DIRS.flatMap((dir) => walk(join(ROOT, dir)));
+describe('layering: src/core, src/config, src/ui/layout and the pure presentation helpers are pure', () => {
+  const files = [...PURE_DIRS.flatMap((dir) => walk(join(ROOT, dir))), ...PURE_FILES.map((file) => join(ROOT, file))];
 
   it('finds the pure modules', () => {
     expect(files.length).toBeGreaterThan(0);

@@ -421,3 +421,412 @@ Report:
 - a proposed commit message and the exact commands to commit and create the v3-polish tag.
 Don't run the commit or tag commands yourself.
 
+=== 2026-09-11T07:56:50-05:00 | session 567fdf5c ===
+Task: Fish of Fortune styled version, step 1: 3D ONLY. Export the .blend files to GLB with Blender and replace the primitive units and track with them.
+
+SCOPE (strict):
+- In scope: the fish (GLB) that replaces the triangle units, and the track (GLB) the fish travel on.
+- Out of scope, do NOT touch in this step: any UI. That means the HUD, overlays (win, lose, start screen, settings), buttons, the "N/5" counter, capacity labels, UI animations and CSS, plus the 2D board elements (blocks, empty tiles, slots, reserve cells, background), VFX and SFX. They keep their current v3 look and behavior, and UIManager, VfxFactory and SfxBank must not change. Adding lights must not change how these flat elements look; they keep their current unlit materials.
+- If a 3D change seems to require a UI change, don't make it. List it under "Pending for the UI step" in your report.
+- src/core, the level files and the core tests must not change. Every new value lives in render config. Don't add npm dependencies without asking; GLTFLoader and SkeletonUtils from three/examples/jsm are fine.
+
+Source files: <C:\Users\anama\Downloads\Art>. Never modify, re-save or move the .blend files.
+
+STAGE 1 – Inventory, then STOP for my approval:
+1) Find the Blender executable: check the PATH first, then the usual install folders. If it isn't found, ask me for the path. Report the Blender version.
+2) Write a Python inventory script at tools/blender/inspect_blend.py and run it headless (blender -b file.blend --python script.py). Write scripts as files, never as long inline commands. For each .blend, report:
+   - objects, meshes and polygon counts;
+   - materials, and whether textures are packed or external (flag missing texture paths);
+   - modifiers, animations and armatures;
+   - scale, dimensions, origin position and forward/up axes.
+3) Identify which objects are the fish and which are the track, and whether the track is modular (straight and corner pieces) or a single fixed loop.
+4) Propose:
+   - the export settings;
+   - how the fish gets tinted per unit color (which material changes color);
+   - how the track adapts to each level's size.
+   Then STOP.
+
+STAGE 2 – Export (after approval):
+1) Write a reusable export script at tools/blender/export_glb.py, and add an npm script "export:models" that reads the Blender path from the BLENDER_PATH environment variable.
+2) Export to public/assets/models/ as .glb:
+   - format GLB, apply modifiers, Y-up, embedded textures, only the needed objects;
+   - clean transforms, origin at a sensible pivot (fish center, track piece joints);
+   - include the fish animation if one exists;
+   - no Draco compression.
+   If the track is a single loop, export straight and corner pieces as separate GLBs when the file allows it without editing the .blend. Otherwise report it and ask me.
+3) Validate every GLB with a Node script, without new dependencies: glTF magic and version 2, parse the JSON chunk, and report meshes, materials, textures, animations, bounding box and file size.
+
+STAGE 3 – 3D integration:
+1) Asset loading: add an AssetLoader in src/render/assets/ that preloads every GLB once and caches it. main.js awaits it before the existing start screen appears. Add no loading screen or any other new UI; if a load fails, log a clear console error naming the file.
+2) Add StyledFactory.js with the same API as PrimitiveFactory, overriding only unit and track creation. Every other element delegates to PrimitiveFactory. Swap it in at the composition root, and leave PrimitiveFactory untouched.
+3) Fish units:
+   - clone per unit, sharing geometry; use SkeletonUtils.clone if the model is skinned;
+   - normalize size to render.layout.unitSize from the bounding box;
+   - add render.models.fish {url, scale, rotationOffset, yOffset, tintMaterialNames};
+   - tint per palette color with one shared material per color, not per unit;
+   - the fish faces its direction of travel using the existing rotation damping; if it has a swim animation, play it with an AnimationMixer that follows pause and time scale;
+   - the existing labels, VFX, death pop and slot parking must keep working unchanged with the fish.
+4) Track:
+   - the logical track path in core doesn't change, and the visual pieces must line up exactly with the lanes at every level's cellSize;
+   - put the piece placement math in a pure function src/render/layout/computeTrackPieces.js (no three, no DOM) that returns the position, rotation and type of each piece from the layout and level size;
+   - render straight pieces with an InstancedMesh built from the GLB geometry, and corners the same way.
+5) Lighting: add hemisphere and directional lights in render config (render.lighting) that affect only the GLB meshes. Set outputColorSpace and textures to sRGB. Keep the top-down OrthographicCamera; if the models don't read well from above, report it and propose a small tilt without applying it.
+6) Dispose clones and instances on restart and level change, and keep the cached GLB assets alive across levels.
+
+Tests (node, no Three.js):
+- computeTrackPieces covers every lane with no gaps or overlaps, with corners in the 4 corners, for all levels.
+- The size normalization math.
+- The GLB validation script passes for every exported file.
+- no-render-imports.test.js, all core tests and the build stay green.
+
+Check: play Level 1, Panda and Carrot.
+- Fish follow the track, are tinted correctly and face their direction.
+- The track lines up with the lanes on every level.
+- The UI and 2D elements look exactly as in v3.
+- Report FPS and draw calls on Carrot with 5 fish moving, compared to the v3 numbers, and confirm renderer.info.memory stays stable after 5 restarts.
+
+README: start a "Styled – Fish of Fortune" section with the asset pipeline (source .blend, export command, export settings, output folder) and the new config keys. Don't change the v1, v2 or v3 sections.
+
+Report the export settings used, the GLB stats, any issues found in the .blend files, the "Pending for the UI step" list, and a proposed commit message.
+=== 2026-09-11T08:19:31-05:00 | session 567fdf5c ===
+Decisions approved. Proceed with Stage 2 (export) and Stage 3 (3D integration). The goal of this step is to have the 3D art (fish and track) fully implemented in-game, looking as close as possible to the Blender files.
+
+1) Done
+
+2) Track pieces: OK to cut them in the export script, as long as it's non-destructive and reproducible:
+- the .blend files are never modified, and running "npm run export:models" regenerates the same pieces;
+- add a test that places straight and corner pieces side by side and checks the joints line up with no gaps or overlaps;
+- document the cut in the README asset pipeline section.
+
+
+3) Cross-section: canal = 1 cell with no inner rim. The fish must fit inside the canal at every level's cellSize; report the fish-to-canal width ratio on Level 1, Panda and Carrot.
+
+4) Tint: midtone shader tint now.
+- Use one shared material per palette color, patching MeshStandardMaterial with onBeforeCompile, so highlights, shadows and texture detail survive.
+- Put the strength in render config (render.models.fish.tint).
+- The palettes include black (#0A0A0A) and white (#FFFFFF): black and white fish must stay readable against the track and the background. If they don't, add a minimum luminance or rim value in config and report it.
+- If the eyes get tinted, list the eye material split under "Pending"; don't wait for it.
+
+5) Export details:
+- Fish textures at 512²: yes. The originals stay in the .blend, and the README records the size used.
+- Water colours: yes, flatten them, since Blender procedural nodes don't export to glTF. Sample the colours from the Blender material so they match the render.
+- Chevrons: keep them if the straight pieces are already oriented along the travel direction through their instance rotation, for both cw and ccw. If that complicates the corners, leave them out and list them under "Pending".
+
+6) Entry corner: tint the entry corner piece through its instance colour. Keep it subtle, with the colour in render config, so the entry point stays readable as in v3.
+
+7) Scope: correct. The ring guide tiles are the primitive track to replace. Reserve tiles, slots, blocks, empty tiles, background, VFX, SFX and all UI stay exactly as in v3.
+
+Visual check before reporting:
+- render a reference image of the fish and a track piece from Blender headless, using the same top-down view;
+- compare it with the in-game result on Level 1, Panda and Carrot;
+- report any visible difference in colour, scale or shading.
+
+=== 2026-09-11T09:45:18-05:00 | session 567fdf5c ===
+Task: Fish of Fortune styled version, 2D step 1: start screen UI ONLY. Import the 2D art and replace the v3 flat start screen with it.
+
+SCOPE (strict):
+- In scope: the start screen (background art, Play button, font) and the processing of those two images.
+- Out of scope, do NOT change: the HUD, win/lose/settings overlays, the slots counter, capacity labels, the board, the fish and track (3D), VFX and SFX. They keep their current look. AppFlow keeps its states (LOADING → MENU → PLAYING) and Play still loads Level 1.
+- src/core, the level files and the core tests must not change. Every new value lives in render config (render.ui.startScreen). Don't add npm dependencies without asking.
+
+Source images (never modify them):
+- assets/ui/source/start_screen.jfif: full portrait key art with the "BLOCK CHOMPERS" title already painted in.
+- assets/ui/source/button_green.jfif: a glossy green pill button on a grey textured background.
+
+STAGE 1 – Process the assets, then STOP for my approval:
+1) Write the processing script at tools/ui/process_ui.py (Python + Pillow; if Pillow is missing, ask me before installing anything). Add an npm script "process:ui". Write scripts as files, never as long inline commands.
+2) Background: convert to public/assets/ui/start_bg.webp (quality ~85) at the original resolution, or 1080 px wide if larger. Report dimensions, aspect ratio and file size.
+3) Button: remove the grey background so the pill is on a transparent background.
+   - Clean anti-aliased edges with no grey fringe; the glossy highlights must stay intact.
+   - Drop the baked shadow; the shadow is added in CSS instead (filter: drop-shadow, values in config).
+   - Crop tightly to the pill with a few pixels of padding and export public/assets/ui/button_green.png.
+   - Render a preview of the cutout over a dark and a light background at tools/ui/preview_button.png.
+4) Font: the "Play" label must be white and use a chunky, rounded, bubbly display font similar to the title.
+   - Propose 3 OFL-licensed candidates (for example Lilita One, Titan One, Luckiest Guy).
+   - Render "Play" in each one in white with a dark outline, next to a crop of the title, into tools/ui/preview_fonts.png. Recommend one.
+   - Self-host it: download the .woff2 into public/assets/fonts/ with its license file. No CDN links, because the game must run locally.
+5) Report the previews, the sizes and the font recommendation, then STOP.
+
+STAGE 2 – Integration (after approval):
+1) Layout:
+   - The background art is shown fully inside the portrait design frame with object-fit: contain, so the painted title is never cropped.
+   - On wider or taller viewports, fill the extra space with a blurred, darkened copy of the same image (values in config), never with stretching.
+   - Don't render the old text title on top of the art. Keep render.ui.titleText only for the document title and the aria-label.
+2) Play button:
+   - A real <button> element with button_green.png as its background, keeping the image's aspect ratio, and the label "Play" centered on it.
+   - Label: the chosen font, color #FFFFFF, a dark green outline (-webkit-text-stroke with paint-order, or layered text-shadow) and a soft drop shadow, so it reads like the title. Size scales with the button.
+   - Position and width are percentages of the displayed image rect (render.ui.startScreen.playButton {centerX, centerY, widthPct}), so the button stays anchored to the art at any viewport size. Place it in the lower part over the sand, without covering the title or the fish; report the values you chose.
+   - Put the anchoring math in a pure function src/ui/layout/computeStartScreenLayout.js (no DOM): (viewport, imageSize, config) → image rect and button rect.
+   - States: idle breathing pulse (subtle scale), hover brighten, pointerdown squash and release bounce, :focus-visible ring and keyboard activation (Enter/Space). Reuse the existing v3 tween helper, the button tap SFX and the start screen enter/exit animations.
+   - Clicking Play: the same flow as v3 (AudioContext resume, exit animation, load Level 1).
+3) Loading:
+   - Preload start_bg.webp and button_green.png with the existing AssetLoader, calling img.decode().
+   - Wait for the font with document.fonts.load before showing the start screen, so the label never flashes in a fallback font.
+   - If an asset fails, log a clear console error naming the file and fall back to the v3 flat start screen.
+
+Tests (node, no DOM, no Three.js):
+- computeStartScreenLayout: the image rect fits inside the viewport and keeps its aspect; the button rect stays at the same relative position inside the image across portrait, square and landscape viewports; the button never goes outside the image rect.
+- no-render-imports.test.js, all core tests and the build stay green.
+
+Check:
+- Start screen at 390×844, 768×1024 and 1920×1080: title fully visible, button anchored in the same spot on the art, label crisp and white in the chosen font.
+- Play works with mouse, touch and keyboard, and Level 1 loads.
+- The rest of the UI and the game look exactly as before this step.
+
+README: in the "Styled – Fish of Fortune" section, add the 2D asset pipeline (source images, "process:ui", outputs, background removal approach), the font with its license, the credit that the start screen art and button were AI-generated with Gemini, and the new config keys.
+
+Report the chosen font, the button position values and file sizes, and propose a commit message.
+
+=== 2026-09-11T10:14:08-05:00 | session 567fdf5c ===
+Confirmed. Proceed with Stage 2.
+
+1) Loading: agreed. No LOADING state. Keep AppFlow as MENU → PLAYING, and in main.js await the images (img.decode()) and the font (document.fonts.load) before the UI mounts, the same way the 3D models are awaited. If an asset fails, log the file name and fall back to the v3 flat start screen.
+
+2) Config: use the existing structure. Put the new keys under ui.startScreen, and keep ui.text.title for the document title and the aria-label. Don't create render.ui. Use ui.startScreen wherever my prompt said render.ui.startScreen, including the README table.
+
+3) Sources: yes, commit the two source JPEGs in assets/ui/source/ so "process:ui" can be rerun. They also belong in /assets in the final deliverable. The processed files in public/assets/ui/ are committed too.
+
+4) Font and button: Titan One approved; self-host the .woff2 with its OFL license file. 800 px approved as the exported PNG width. On screen, the button size still comes from ui.startScreen.playButton.widthPct relative to the image rect, not from the PNG's pixel size.
+
+=== 2026-09-11T10:52:28-05:00 | session 567fdf5c ===
+Task: Fish of Fortune styled version, 2D step 2: gameplay background, HUD and slots, plus a reserve and fish-size layout change.
+
+SCOPE (strict):
+- In scope:
+  - the gameplay background image, drawn beneath everything;
+  - the HUD from the sheet: settings button, level bar, coin bar with coin icon;
+  - the 5 slot tiles;
+  - showing only 3 reserve rows;
+  - bigger fish, with the capacity number drawn in a smaller font size. This is only the text size; the capacity value itself never changes.
+- Out of scope, do NOT change: the start screen, the win/lose overlays, the settings panel, blocks and empty tiles, the track, VFX and SFX. They keep their current look.
+- src/core, the level files and the core tests must not change; everything here is presentation.
+- Follow the existing config structure: ui.* for DOM UI, render.* and render.layout for the scene. Every new value goes in config. Don't add npm dependencies without asking.
+
+Source images (never modify them):
+- assets/ui/source/gameplay_bg.jfif: portrait underwater background with a painted framed area in the middle.
+- assets/ui/source/hud_sheet.png: a sheet on a flat grey background with, from left to right, the level bar, the coin bar with its coin icon, and a round settings button; below them, 5 glass slot tiles.
+- If assets/ui/source/hud/ contains separate higher-resolution PNGs of these elements, use those instead of cutting the sheet.
+
+STAGE 1 – Process the assets, then STOP for my approval:
+1) Extend tools/ui/process_ui.py and the "process:ui" script.
+2) Background: export public/assets/ui/gameplay_bg.webp (quality ~85, max 1080 px wide). Report its size and aspect, and the painted frame's rect as percentages of the image.
+3) Cut the sheet into separate transparent PNGs in public/assets/ui/hud/:
+   - level_bar.png, coin_bar.png, coin_icon.png, settings_button.png and slot_tile.png;
+   - pick the cleanest of the 5 identical tiles for slot_tile.png;
+   - remove the grey background with clean anti-aliased edges, no grey fringe, and highlights intact;
+   - keep baked shadows only if they separate cleanly; otherwise drop them and add the shadow in CSS.
+4) Resolution check: the sheet is small. For each element, compare its source pixel size with its on-screen size at devicePixelRatio 2 on a 390×844 viewport. If any element would be upscaled, list it and recommend re-exporting it from Figma at 3x.
+5) Render previews of every cutout over dark and light backgrounds into tools/ui/preview_hud.png, then STOP.
+
+STAGE 2 – Integration (after approval):
+1) Gameplay background:
+   - Draw it beneath the board, track, fish, slots and reserve, using the same approach as the start screen: fitted inside the portrait design frame, with a blurred, darkened copy filling any extra viewport space and never stretched.
+   - It replaces the per-level flat scene backgrounds; keep those keys only as a fallback if the image fails to load.
+   - Align boardRegion's center with the painted frame's center when the layout allows it; otherwise report the offset.
+   - Readability: black and white blocks must stay readable over the art. If they don't, add a subtle translucent backing panel behind the board (color, opacity and corner radius in config) instead of changing the art.
+   - Preload and decode it in main.js like the other assets, with a console error and the flat fallback on failure.
+2) HUD (DOM, same positions as v3):
+   - Settings button top-left, level bar centered at the top, coin bar top-right with the coin icon overlapping its left end, as in the sheet.
+   - Real <button> for settings: squash on pointerdown, bounce on release, :focus-visible ring; it opens the existing settings panel.
+   - Text inside the bars ("Level 1" and the money amount) uses Titan One in white with a dark outline, matching the Play button. It shrinks to fit if the amount grows, and bars keep their aspect ratio.
+   - Keep every v3 animation: HUD slide-in, level label transition, coin count-up punch. The "+$X" fly now lands on the coin icon.
+   - The HUD scales with the design frame, so sizes are identical on every level and viewport.
+3) Slots: replace the flat slot planes with slot_tile.png as textured planes (transparent, sRGB, shared texture and material), size render.layout.slotSize. Fish parking, the "N/5" counter and the v3 slot animations keep working.
+4) Reserve shows only 3 rows:
+   - render.layout.reserveVisibleRows = 3. Only units in the first 3 rows of each column are rendered; deeper units are hidden and aren't raycast targets.
+   - When a column shifts up, the units move up with the existing easing and stagger, and the unit entering row 3 slides in from half a cell below while fading in. Use opacity and position only; no stencil or clipping.
+   - Put the visibility math in a pure function src/render/layout/computeReserveVisibility.js (no three, no DOM): (reserveColumns, visibleRows) → visible units with their row index and the ones entering.
+5) Bigger fish, smaller number text:
+   - Recompute the layout: the reserve region now uses 3 rows instead of 7, so give the freed space to bigger reserve cells and fish (render.layout.unitSize) and to the board region.
+   - Slots, reserve and fish sizes stay identical across levels, as in the layout fix.
+   - Capacity label font size only: the number on the fish's back is drawn with a smaller font relative to the fish, so the fish reads bigger than its number and the countdown animation is easier to see. Add render.layout.labelFontScale = text height as a fraction of the fish width, starting at 0.45.
+   - The capacity value, its rules and how it decreases stay exactly the same; only the text size changes.
+   - The label uses Titan One in white with a dark outline, and is regenerated only when the number changes.
+   - The v3 number animation (old number out, new number pops in) and the death pop must be clearly visible at the new sizes.
+   - Fish on the track keep unitSize; check they still fit the canal on Level 1, Panda and Carrot.
+
+Tests (node, no DOM, no Three.js):
+- computeReserveVisibility: at most 3 visible rows per column; after a pick the column shifts and the correct unit becomes visible and entering; columns with fewer than 3 units work; an empty column works.
+- computeLayout: the reserve rect fits 3 rows; unitSize is larger than before; slot, reserve and unit rects are deep-equal across all levels; the board stays inside boardRegion.
+- no-render-imports.test.js, all core tests and the build stay green.
+
+Check at 390×844, 768×1024 and 1920×1080:
+- the background is under everything with no stretching;
+- the HUD matches the sheet and is crisp;
+- slots show the glass tiles;
+- only 3 reserve rows are visible and the reveal animation is smooth;
+- the fish are bigger, and the number text is smaller relative to the fish and readable;
+- blocks are readable on Level 1, Panda and Carrot;
+- FPS and draw calls are close to the previous step.
+
+README: in the "Styled – Fish of Fortune" section, add the new assets and processing, the AI-generated credit for the background (Gemini), the 3-visible-rows change with its reason (more space, bigger fish, smaller label text), and the new config keys.
+
+Report the resolution check, the layout values before and after (unitSize, reserve and board regions), the label font scale, and a proposed commit message.
+
+=== 2026-09-11T11:10:08-05:00 | session 567fdf5c ===
+Decisions. Proceed with Stage 2.
+
+1) Level bar: it is only a static label container, not a progress bar. It shows the current level as "Level 1", "Level 2" or "Level 3" and nothing else.
+- No fill, no progress value, no fill animation, and no inner track or bar graphic. If the rebuilt pill has an inner fill layer or a progress element, remove it.
+- The only dynamic part is the text. It changes on level load with the existing v3 label transition.
+- Use the rebuilt pill for now. Keep the final file name (public/assets/ui/hud/level_bar.png), its aspect ratio and its size in config, so the real export can later replace just the file with no code changes. List it under known limitations in the README as "level bar rebuilt, pending Figma export".
+- The coin bar works the same way: a static container with the coin icon and the money amount, with no fill.
+
+2) Painted frame: accept the offset. Keep the board in boardRegion; don't move or shrink the board to match the art, and don't regenerate the art. Report the offset. The painted frame must not compete with the board: add the translucent backing panel behind the board (color, opacity, corner radius and padding in config) and tune it so the frame edges don't show awkwardly around it. Show me a screenshot of Level 1 and Carrot with the panel.
+
+3) Background width: raise it to 1170 px so 3x phones aren't upscaled. Keep webp quality ~85 and report the final file size.
+
+=== 2026-09-11T12:12:45-05:00 | session 567fdf5c ===
+Task: Fish of Fortune styled version, 2D step 3 + performance.
+Part A: find and fix the lag.
+Part B: integrate the pause (settings), win and lose overlays, matching the mockups.
+Do Part A's fixes before adding the overlays, so measurements stay clean.
+
+SCOPE (strict):
+- In scope: performance fixes anywhere in the presentation layer, plus the settings/pause panel, the win overlay and the lose overlay.
+- Out of scope: the start screen art, the HUD art and layout, the board, fish and track art, the VFX and SFX design, and gameplay rules. Performance fixes must not visibly change any of them.
+- src/core, the level files and the core tests must not change. Follow the existing config structure (ui.*, render.*), put every new value in config, and don't add npm dependencies without asking.
+
+SOURCES (asset constraint):
+- I can't provide separate exports with transparent backgrounds. The only sources are the files already in assets/ui/source/ (button_green.jfif, gameplay_bg.jfif, hud_sheet.png, unchanged and not merged) and 3 mockups in assets/ui/source/overlays/, each 800×1280:
+  - mockup_pause.png: "PAUSED", RESUME, RESTART LEVEL;
+  - mockup_defeat.png: "DEFEAT!", "Out of Space!", a sad blue block inside a bubble, RETRY;
+  - mockup_victory.png: "VICTORY!", "LEVEL CLEAR!", a big gold star coin, CONTINUE.
+- In all 3, a rounded translucent glass panel sits centered over the dimmed game.
+- Never modify the sources and never ask me for separate exports. Get every asset with tools/ui/process_ui.py ("process:ui").
+
+========================================
+STAGE 1 – Profile + extract assets, then STOP for my approval
+========================================
+
+A1) Measure before changing anything:
+- Test on the production build (npm run build, then npm run preview), not the dev server. Report whether the lag also happens in dev only.
+- Extend the debug panel (debug.enabled) with: FPS, frame time avg and p95, time split into simulation / render / UI-DOM, draw calls, triangles, geometries, textures, programs, active particles, active tweens and audio voices.
+- Benchmark scenarios, at 390×844 with devicePixelRatio 2:
+  - start screen idle;
+  - Level 1 with 5 fish moving;
+  - Carrot with 5 fish firing plus block bursts;
+  - the win confetti.
+  If possible, also run them with 4x CPU throttling in Chrome DevTools.
+- Record long tasks (>50 ms), GC spikes and memory after 5 restarts.
+
+A2) Audit these likely causes and report which ones are real, with numbers:
+- Renderer: uncapped pixel ratio, antialias cost, shadows enabled, rendering every frame while paused or in the menu.
+- Draw calls: blocks, empty tiles, slots or reserve cells as individual meshes instead of InstancedMesh; one material per object instead of shared.
+- Fish: one AnimationMixer or skinned clone per fish updating when hidden or idle; one shader program compiled per palette color; hidden reserve fish still updating.
+- Labels: CanvasTexture capacity labels regenerated or re-uploaded more often than when the number changes.
+- VFX: instance buffers updated when nothing is active; per-frame allocations.
+- DOM/CSS: filter: blur() applied live on the blurred background copy; drop-shadow filters or box-shadows on animated elements; backdrop-filter; animating properties other than transform and opacity; layout reads inside the rAF loop; text updated every frame.
+- Input: raycasting on every pointermove.
+- Audio: nodes that are never disconnected.
+- Loop: simulation catch-up spirals when frames are slow (check timing.maxStepsPerFrame).
+
+B1) Extract overlay assets from the mockups:
+- Big coin and sad block: they sit on the glass panel. Sample the panel color around each element, remove it with a soft color key, and feather the edges so there's no blue-grey fringe.
+- The bubble around the sad block: estimate alpha by unmixing against the sampled panel color. If it looks dirty, extract only the block and rebuild the bubble in CSS (radial gradient circle, light rim, highlight, small floating bubbles).
+- Rebuild in CSS, don't extract: the glass panel, backdrop dimming, titles, subtitles and every text label. Never cut text or a panel with the game baked behind it. The glass panel must not use backdrop-filter (use gradients, a light border and an inner highlight instead).
+- Keep reusing the existing cutouts (button_green.png, HUD pieces, settings button, coin icon).
+- Quality: trim to content with a few px of padding, remove stray pixels, apply no color shift. Upscale with Lanczos only when needed, never above 2x, followed by a light unsharp mask. Report each asset's source size and scale.
+- Previews: each asset over dark, light and checkerboard backgrounds, and each rebuilt overlay next to its mockup, into tools/ui/preview_overlays.png.
+
+Stage 1 report:
+- the baseline numbers table;
+- the confirmed causes, ranked by impact;
+- the fix plan with the expected gain for each;
+- the asset previews and the approach used per asset.
+Then STOP.
+
+========================================
+STAGE 2 – Fix performance, then integrate overlays
+========================================
+
+PART A – Performance (fix only the confirmed causes, one at a time, re-measuring after each):
+- Targets on the production build at 390×844 with devicePixelRatio 2:
+  - stable 60 FPS on Carrot with 5 fish firing and on the win confetti;
+  - frame time p95 under 16.7 ms;
+  - no long tasks during play;
+  - memory stable after 5 restarts.
+- Typical fixes, applied only where measured:
+  - cap pixel ratio at render.maxPixelRatio (2);
+  - no shadows;
+  - render on demand while paused or in the menu;
+  - InstancedMesh for blocks and tiles;
+  - shared materials, and one shared tint program with the color passed as a uniform or instance attribute;
+  - update mixers only for visible moving fish, and freeze hidden reserve fish;
+  - update labels only on change;
+  - skip VFX buffer updates when nothing is active;
+  - pre-render the blurred background once into a static image or canvas instead of a live CSS blur;
+  - replace animated filters and shadows with static layers;
+  - no layout reads in the loop;
+  - throttle raycasts to pointerdown;
+  - zero allocations per frame.
+- No visual regression: compare before and after screenshots of Level 1 and Carrot.
+
+PART B – Overlays:
+1) Structure: three separate DOM containers on one shared base.
+   - OverlayBase: backdrop, glass panel, enter and exit animations, input blocking.
+   - SettingsPanel (pause), WinOverlay and LoseOverlay are independent containers with their own markup. The settings panel stays a separate container, never merged with win or lose.
+   - Only one is visible at a time, and settings can't open during win or lose.
+   - Pure controller src/ui/overlays/OverlayController.js (no DOM): states NONE, PAUSE, WIN and LOSE; allowed transitions; a busy flag while animating. UIManager only renders it and maps buttons to GameManager commands.
+2) Typography, consistent everywhere, Titan One only:
+   - Titles ("PAUSED", "DEFEAT!", "VICTORY!"): light-to-mid blue vertical gradient fill, thick dark blue outline, soft shadow.
+   - Subtitles ("Out of Space!", "LEVEL CLEAR!"): smaller, pale lavender-white fill with a subtle dark outline.
+   - Button labels: exactly the Play button style (white, dark green outline, soft shadow), uppercase. Even where the mockups show a different font, all buttons share this style.
+   - Strings in ui.text; sizes, colors and outlines in ui.overlays.typography. Text shrinks to fit its button.
+   - Use static text-shadow or stroke layers, not animated filters.
+3) Buttons: reuse button_green.png and the Play button component.
+   - Real <button> elements: squash on pointerdown, bounce on release, hover brighten, :focus-visible ring, Enter and Space activation, and the existing tap SFX.
+   - Disabled while their overlay animates, so double taps fire once. The action runs after the exit animation.
+4) Settings / pause:
+   - Opened by the HUD settings button. It truly freezes the simulation, fish animations and VFX, and the scene renders on demand while paused.
+   - Buttons: RESUME, RESTART LEVEL, and the existing sound toggle as a third button of the same style ("SOUND: ON" / "SOUND: OFF") in the empty space below.
+   - The settings button stays above the backdrop and highlighted. Pressing it again or pressing Escape resumes. Tapping the backdrop does nothing.
+5) Lose: on LEVEL_LOST (both reasons), show "DEFEAT!", "Out of Space!", the sad block with a gentle idle float, and RETRY, which restarts the same level. Keep the v3 soft entrance and small title shake.
+6) Win: on LEVEL_WON, show "VICTORY!", "LEVEL CLEAR!", the big coin with a pop-in and a slow shine or bob, the reward as "+X" under the coin, and CONTINUE.
+   - After Level 3 the button reads "PLAY AGAIN" and returns to Level 1.
+   - Confetti stays visible above the panel without a second WebGL context; if it needs a layer above the DOM, use a lightweight 2D canvas with the same pool and cap.
+   - The "+X" fly starts at the big coin and lands on the HUD coin icon, then the count-up plays.
+   - Coins everywhere, with no "$" sign.
+7) HUD during overlays: the backdrop dims the game and the HUD. During win and lose, the coin bar stays above the backdrop so the count-up is visible.
+8) Layout and loading: the panel size and position are relative to the design frame (ui.overlays.panel), identical on every level and viewport. Preload and decode the new images in main.js with the other assets, with a console error and the flat v3 overlay as fallback.
+
+Tests (node, no DOM, no Three.js):
+- OverlayController: valid transitions; settings blocked during WIN or LOSE; no action while busy; RESUME, RESTART, RETRY, CONTINUE and PLAY AGAIN map to the right commands; PLAY AGAIN appears only after the last level.
+- Unit tests for any new pure performance helper (for example the raycast throttle or the render-on-demand flag).
+- no-render-imports.test.js, all core tests and the build stay green.
+
+Final check (production build, 390×844, 768×1024, 1920×1080):
+- the benchmark scenarios re-run, including each overlay open, with a before/after table against Stage 1;
+- each overlay compared side by side with its mockup (screenshots);
+- every button works with mouse, touch and keyboard;
+- pause truly freezes the game;
+- the win flow updates the coins and loads the next level;
+- the lose flow restarts the level;
+- fonts and button styles are identical across the overlays and the start screen.
+
+README, "Styled – Fish of Fortune" section:
+- a "Performance" subsection with the causes found, the fixes, and the before/after table;
+- the overlay structure and typography rules;
+- the asset approach: extracted from Photoshop artboard mockups with process_ui.py, and which elements were extracted vs. rebuilt in CSS;
+- the new config keys.
+Ask me for the illustration credits; don't guess them.
+
+Report: the before/after performance table, the fixes applied, the asset approach per element, the comparison screenshots, and a proposed commit message.
+
+=== 2026-09-11T13:16:03-05:00 | session 567fdf5c ===
+Go. Start Part A, fix 1. Decisions:
+
+1) Pause layout: approved at 590 / 718 / 846 mockup px. Keep the same button width and gap for all three, and check that SOUND sits fully inside the panel with the same bottom margin as the mockup's spacing. Put the positions in ui.overlays.pause so they can be tuned.
+
+2) "+X" reward: approved as gold fill with a brown outline, as a named 4th style, ui.overlays.typography.reward.
+- It's the only reward style: reuse it for the "+X" on the win card and for the "+X" that flies to the HUD coin icon, so there are no other variants.
+- Keep the coin moved up 7 px, and check that the coin, "+X" and CONTINUE don't feel cramped at 390×844.
+
+3) Known differences: accepted, with one small addition.
+- Backdrop: dim only, no blur. No backdrop-filter and no canvas snapshot, for performance.
+- Titles: no inner bevel. You may add a lighter band near the top of the existing gradient to suggest the bevel, only if it's a plain gradient stop with no filters and no extra layers.
+- Subtitles: the thinner outline is approved.
+List all three under "Known differences from the mockups" in the README.
+
+4) Credits: in the README, credit the three mockups and the coin and sad-block art cut from them as: "Illustrations AI-generated with Gemini; UI mockups composed in Photoshop by Ana". Use the same credit line for the start screen art, the gameplay background and the HUD sheet if they aren't credited yet, so every 2D asset has a consistent credit.
+
