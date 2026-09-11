@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { PrimitiveFactory } from './PrimitiveFactory.js';
 import { Events } from '../core/Events.js';
 import { UnitState } from '../core/Unit.js';
+import { countFreeSlots } from '../core/InventoryManager.js';
+import { trackDrawPosition, trackFromSnapshot } from './trackPlacement.js';
 
 /** facing -> heading on the cell plane (x right, y down). */
 const HEADING = Object.freeze({ N: [0, -1], E: [1, 0], S: [0, 1], W: [-1, 0] });
@@ -16,8 +18,8 @@ const IN_SLOT = new Set([UnitState.ACTIVE, UnitState.RETURNED]);
  *   bindEvents(bus) -- effects only (end-of-level background tint)
  *
  * All layout is computed in CELL units (x right, y down, origin = grid top-left) and converted once in
- * cellToWorld(). Concurrent runners ride parallel sub-lanes (render.track.laneOffsetPerSlot x slotIndex
- * along the track's outward normal) so they never overlap while core stays pure pass-through.
+ * cellToWorld(). Runners are drawn exactly on the track path at their interpolated track distance
+ * (trackPlacement.js); spacing between them only exists along the track (Config.track.launchSpacing).
  */
 export class Renderer {
   /** @type {Map<string, THREE.Mesh>} key 'row,col' */
@@ -36,6 +38,12 @@ export class Renderer {
   /** Resolved per-level colours (see #styleFor). */
   #style = null;
   #layout = null;
+  /** "N/5" available-slot counter sprite (render.slotCounter). */
+  #slotCounter = null;
+  /** The level Track rebuilt from the snapshot, used to place runners on the path. */
+  #track = null;
+  /** snapshot.stepAlpha of the frame being drawn. */
+  #alpha = 0;
   #pickables = [];
   /** Reserve shift animation state per unit id: { col, y (drawn row), target, startAt }. */
   #reserveAnim = new Map();
@@ -131,24 +139,28 @@ export class Renderer {
     const { rows, cols } = snapshot.grid;
     const { margin } = snapshot.track;
     const { reserveCols, reserveRows } = snapshot.inventory;
-    const { inventory: inv, track, unitSize } = this.config.render;
+    const { inventory: inv, unitSize } = this.config.render;
     const slotCount = snapshot.slots.length;
     const pitch = 1 + inv.slotGap;
     const cx = cols / 2;
-    // How far the outermost sub-lane (plus half a unit) reaches beyond the ring centre line.
-    const reach = Math.max(0.5, track.laneOffsetPerSlot * (slotCount - 1) + unitSize / 2);
+    // How far a unit (half its size) reaches beyond the ring centre line; runners are drawn on the line itself.
+    const reach = Math.max(0.5, unitSize / 2);
     const panelTop = rows + margin - 0.5 + reach + inv.gapBelowGrid;
     const slotY = panelTop + inv.slotsRowOffset;
     const reserveY = panelTop + inv.reserveRowOffset;
     const halfRow = (Math.max(slotCount, reserveCols) * pitch) / 2;
+    const counter = this.config.render.slotCounter;
+    const counterX = cx + ((slotCount - 1) / 2) * pitch + counter.offsetX;
+    const counterHalfWidth = (counter.height * counter.canvasWidth) / counter.canvasHeight / 2;
     return {
       pitch,
       bounds: {
         minX: Math.min(-margin + 0.5 - reach, cx - halfRow),
-        maxX: Math.max(cols + margin - 0.5 + reach, cx + halfRow),
+        maxX: Math.max(cols + margin - 0.5 + reach, cx + halfRow, counterX + counterHalfWidth),
         minY: -margin + 0.5 - reach,
         maxY: reserveY + (Math.max(1, reserveRows) - 1) * pitch + pitch / 2,
       },
+      counterPos: { x: counterX, y: slotY + counter.offsetY },
       slotPos: (index) => ({ x: cx + (index - (slotCount - 1) / 2) * pitch, y: slotY }),
       reservePos: ({ col, row }) => ({ x: cx + (col - (reserveCols - 1) / 2) * pitch, y: reserveY + row * pitch }),
     };
@@ -211,6 +223,14 @@ export class Renderer {
       const mesh = this.#slotMeshes[slot.index];
       if (mesh) mesh.material = this.factory.slotMaterial(slot.status);
     }
+    this.#setSlotCounter(snapshot.slots);
+  }
+
+  /** "N/total" from a slot list: N = FREE slots (moving and parked units both hold theirs). */
+  #setSlotCounter(slots) {
+    if (!this.#slotCounter) return;
+    const { free, total } = countFreeSlots(slots);
+    this.factory.setText(this.#slotCounter, `${free}/${total}`);
   }
 
   /** Per-frame sync from a snapshot. Safe to call before a level is loaded. */
@@ -218,6 +238,7 @@ export class Renderer {
     if (!this.scene || !snapshot || !snapshot.track) return;
     const signature = this.#signatureOf(snapshot);
     if (signature !== this.#signature) this.#rebuildStatic(snapshot, signature);
+    this.#alpha = snapshot.stepAlpha || 0;
     if (snapshot.grid.version !== this.#gridVersion) {
       this.buildGridFromState(snapshot.grid);
       this.#gridVersion = snapshot.grid.version;
@@ -255,6 +276,7 @@ export class Renderer {
     this.factory.setStyle(this.#style);
     this.scene.background.setHex(this.#style.background);
     this.#layout = this.#computeLayout(snapshot);
+    this.#track = trackFromSnapshot(snapshot);
     this.buildTrack(snapshot.track);
     for (let index = 0; index < snapshot.slots.length; index += 1) {
       const mesh = this.factory.slot('free', index);
@@ -263,6 +285,9 @@ export class Renderer {
       this.#levelRoot.add(mesh);
       this.#slotMeshes.push(mesh);
     }
+    this.#slotCounter = this.factory.text('', this.config.render.slotCounter);
+    this.cellToWorld(this.#layout.counterPos.x, this.#layout.counterPos.y, this.config.render.label.yOffset, this.#slotCounter.position);
+    this.#levelRoot.add(this.#slotCounter);
     const { reserveCols, reserveRows } = snapshot.inventory;
     for (let row = 0; row < reserveRows; row += 1) {
       for (let col = 0; col < reserveCols; col += 1) {
@@ -365,13 +390,9 @@ export class Renderer {
     }
   }
 
-  /** Reserve cell, slot, or track pose pushed outward onto the unit's sub-lane. */
+  /** Track position (interpolated distance, on the path), slot, or reserve cell (with the shift animation). */
   #unitCellPose(unit) {
-    if (unit.pose) {
-      const offset = this.config.render.track.laneOffsetPerSlot * (unit.slotIndex || 0);
-      const { x, y, facing, outward } = unit.pose;
-      return { x: x + outward.dx * offset, y: y + outward.dy * offset, facing };
-    }
+    if (unit.pose) return trackDrawPosition(unit, this.#track, this.#alpha);
     if (IN_SLOT.has(unit.state) && unit.slotIndex !== null) return { ...this.#layout.slotPos(unit.slotIndex), facing: 'N' };
     const anim = this.#reserveAnim.get(unit.id);
     const row = anim ? anim.y : unit.reservePos.row;
@@ -398,6 +419,7 @@ export class Renderer {
       eventBus.on(Events.LEVEL_WON, tint(endTint.won)),
       eventBus.on(Events.LEVEL_LOST, tint(endTint.lost)),
       eventBus.on(Events.LEVEL_LOADED, () => tint(this.#style ? this.#style.background : background)()),
+      eventBus.on(Events.SLOT_STATE_CHANGED, ({ slots }) => this.#setSlotCounter(slots)),
     ];
     return () => offs.forEach((off) => off());
   }
@@ -441,6 +463,8 @@ export class Renderer {
   /** Dispose level meshes (blocks, units, slots, tiles) but keep gl/camera for the next level. */
   clear() {
     for (const group of this.#unitMeshes.values()) this.factory.disposeLabel(group.userData.label);
+    if (this.#slotCounter) this.factory.disposeLabel(this.#slotCounter);
+    this.#slotCounter = null;
     if (this.#levelRoot) this.#levelRoot.clear();
     this.#blockMeshes.clear();
     this.#unitMeshes.clear();

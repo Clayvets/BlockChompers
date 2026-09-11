@@ -74,3 +74,14 @@ export const DEAD_END_LEVEL = level('test-dead-end', [
   [1, 2, 2, 2, 1],
   [1, 1, 1, 1, 1],
 ], [unit(2, 8), unit(1, 16), unit(1, 1)]);
+
+/**
+ * 3x7 (length 24). Launched together, u0-u3 (red 1, walled) park in slots 0-3 and u4 (blue 17, slot 4) eats 16 of its
+ * blue and parks with 1, because (1,5) sits behind (1,6) on the same lanes. At step 24 every slot is blocked, yet the
+ * red blocks and (1,5) are exposed: parked units that could still be relaunched (loseMode 'deadlock' keeps playing).
+ */
+export const JAM_LEVEL = level('test-jam', [
+  [2, 2, 2, 2, 2, 2, 2],
+  [2, 1, 1, 1, 1, 2, 2],
+  [2, 2, 2, 2, 2, 2, 2],
+], [...units(4, 1, 1), unit(2, 17)]);

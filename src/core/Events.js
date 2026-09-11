@@ -24,6 +24,8 @@ export const Events = Object.freeze({
   SLOT_FREED: 'slot:freed',
   /** { slotIndex, unitId } */
   SLOT_BLOCKED: 'slot:blocked',
+  /** { slotIndex, from, to, slots } -- any slot status change (free/occupied/blocked); `slots` is the new slot list */
+  SLOT_STATE_CHANGED: 'slot:state-changed',
   /** { unitId?, slotIndex?, reason } -- activateUnit / launchFromSlot refused; see RejectReason */
   LAUNCH_REJECTED: 'launch:rejected',
   /** { column, moves: [{ unitId, from: { col, row }, to: { col, row } }] } -- units behind a departed unit moved up */
@@ -70,12 +72,19 @@ export const RejectReason = Object.freeze({
 });
 
 /**
- * Reasons a level is lost (payload of LEVEL_LOST). A loss is a deadlock: blocks remain, no unit is moving, no reserve
- * unit can take a free slot, and no parked unit could eat on a full lap (its colour is first on no lane).
+ * Reasons a level is lost (payload of LEVEL_LOST); see GameManager.isLost and Config.rules.loseMode.
  */
 export const LoseReason = Object.freeze({
-  /** ...because every slot is taken */
-  SLOTS_BLOCKED: 'slots-blocked',
-  /** ...although a slot is free: no reserve unit left that can take it */
-  OUT_OF_UNITS: 'out-of-units',
+  /** all slots hold parked units and nothing moves (in 'deadlock' mode: and none of them could hit a block) */
+  SLOTS_BLOCKED: 'slots_blocked',
+  /** reserve empty, nothing moves, blocks remain, and no parked unit could hit a block */
+  OUT_OF_UNITS: 'out_of_units',
+});
+
+/** Values of Config.rules.loseMode. */
+export const LoseMode = Object.freeze({
+  /** lose as soon as every slot is blocked and nothing moves, even if a parked unit could be relaunched */
+  ALL_SLOTS_BLOCKED: 'allSlotsBlocked',
+  /** in that state, lose only if no parked unit could hit a block on a lap */
+  DEADLOCK: 'deadlock',
 });

@@ -59,7 +59,9 @@ describe('relaunching parked units (rules.allowRelaunchParked)', () => {
     expect(slot(game, 0)).toEqual({ index: 0, status: 'blocked', unitId: 'u0' });
     const events = captureEvents(eventBus);
     expect(game.launchFromSlot(0)).toEqual({ ok: true, unitId: 'u0' });
-    expect(events).toEqual([{ type: Events.UNIT_RELAUNCHED, payload: { unitId: 'u0', slotIndex: 0, capacity: 1 } }]);
+    expect(events.map((e) => e.type)).toEqual([Events.UNIT_RELAUNCHED, Events.SLOT_STATE_CHANGED]);
+    expect(events[0].payload).toEqual({ unitId: 'u0', slotIndex: 0, capacity: 1 });
+    expect(events[1].payload).toMatchObject({ slotIndex: 0, from: 'blocked', to: 'occupied' });
     expect(slot(game, 0)).toEqual({ index: 0, status: 'occupied', unitId: 'u0' });
     game.step();
     expect(unit(game, 'u0')).toMatchObject({ state: UnitState.RUNNING, capacity: 1, slotIndex: 0, distanceTraveled: 1 });

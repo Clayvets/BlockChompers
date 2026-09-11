@@ -109,38 +109,54 @@ export class PrimitiveFactory {
     return new THREE.Mesh(this.#tileGeometry(this.render.track.tileScale), this.#flat(isEntry ? entryColor : guideColor));
   }
 
-  /** A camera-facing number sprite (own canvas + texture), always drawn on top. */
+  /** A unit's capacity label: a square text sprite styled by render.label. */
   label(text) {
-    const { canvasSize, worldSize } = this.render.label;
+    const { canvasSize, worldSize, ...style } = this.render.label;
+    return this.text(text, { ...style, canvasWidth: canvasSize, canvasHeight: canvasSize, height: worldSize });
+  }
+
+  setLabel(sprite, text) {
+    this.setText(sprite, text);
+  }
+
+  /**
+   * Plain camera-facing text (own canvas + texture), always drawn on top; release it with disposeLabel().
+   * @param {string} text
+   * @param {{ canvasWidth: number, canvasHeight: number, height: number, font: string, color: string,
+   *           outline: string, outlineWidth: number }} style  height in world units; width follows the canvas aspect
+   */
+  text(text, style) {
     const canvas = document.createElement('canvas');
-    canvas.width = canvasSize;
-    canvas.height = canvasSize;
+    canvas.width = style.canvasWidth;
+    canvas.height = style.canvasHeight;
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
     const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true }));
-    sprite.scale.set(worldSize, worldSize, 1);
+    sprite.scale.set((style.height * style.canvasWidth) / style.canvasHeight, style.height, 1);
     sprite.renderOrder = 10;
-    sprite.userData = { canvas, text: null };
-    this.setLabel(sprite, text);
+    sprite.userData = { canvas, style, text: null };
+    this.setText(sprite, text);
     return sprite;
   }
 
-  /** Redraw a label only when its text changed. */
-  setLabel(sprite, text) {
+  /** Redraw a text sprite only when its text changed. */
+  setText(sprite, text) {
     if (sprite.userData.text === text) return;
-    const { canvasSize, font, color, outline, outlineWidth } = this.render.label;
-    const ctx = sprite.userData.canvas.getContext('2d');
-    const mid = canvasSize / 2;
-    ctx.clearRect(0, 0, canvasSize, canvasSize);
-    ctx.font = font;
+    const { canvas, style } = sprite.userData;
+    const ctx = canvas.getContext('2d');
+    const [cx, cy] = [canvas.width / 2, canvas.height / 2];
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.font = style.font;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.lineJoin = 'round';
-    ctx.lineWidth = outlineWidth;
-    ctx.strokeStyle = outline;
-    ctx.strokeText(text, mid, mid);
-    ctx.fillStyle = color;
-    ctx.fillText(text, mid, mid);
+    if (style.outlineWidth > 0) {
+      ctx.lineWidth = style.outlineWidth;
+      ctx.strokeStyle = style.outline;
+      ctx.strokeText(text, cx, cy);
+    }
+    ctx.fillStyle = style.color;
+    ctx.fillText(text, cx, cy);
     sprite.material.map.needsUpdate = true;
     sprite.userData.text = text;
   }

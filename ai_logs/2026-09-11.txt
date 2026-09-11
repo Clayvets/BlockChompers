@@ -1,0 +1,34 @@
+=== 2026-09-11T00:11:29-05:00 | session 567fdf5c ===
+Task: fix 3 bugs. Keep src/core pure and deterministic, put every new value in Config.js, and find the root cause of each bug before changing code.
+
+1) Units drift off the track: when several units are on the track at the same time, they leave the lane instead of following it (see screenshot: on the left side, units sit outside the track column).
+- Reproduce it first by launching several units in quick succession.
+- Add a failing headless test that checks every ON_TRACK unit's pos lies exactly on the track path at every step, with several units launched together.
+- Check whether the error is in logic (Track/Simulator) or in the renderer. Likely suspects: interpolation matched by array index instead of unit id, offsets that accumulate, and lerping x/y instead of track distance.
+- Fix it so that:
+  - interpolation is done per unit id;
+  - the renderer interpolates track distance and converts it with positionAt(), handling the lap wrap, so units never cut corners;
+  - spacing between units happens only along the track, never sideways.
+
+2) Available slots counter: show "N/5" next to the slot row, where N = FREE slots and 5 = inventory.activeSlots.
+- It starts at 5/5, drops by 1 when a unit takes a slot, goes up when a unit dies and frees its slot, and a parked unit keeps its slot counted as used.
+- Derive it from getState().slots and update it on SLOT_STATE_CHANGED.
+- Use a flat minimal style (plain text, no images) with position and size in render config.
+
+3) Missing lose condition: when all 5 slots are filled with parked units, the reserve can't launch but the game never ends.
+- Add rules.loseMode ('allSlotsBlocked' | 'deadlock'), default 'allSlotsBlocked':
+  - allSlotsBlocked: LOSE with reason "slots_blocked" as soon as all 5 slots are BLOCKED and no unit is moving, even if parked units could still be relaunched.
+  - deadlock: LOSE only if, in that same state, no parked unit can hit any block on a lap (no lane on any side has the unit's color as its first non-empty cell).
+- In both modes, keep "out_of_units": the reserve is empty, nothing is moving, the grid is not cleared, and no parked unit can hit any block.
+- Evaluate lose after win at the end of every step. LEVEL_LOST must fire exactly once, block further commands and show the "Out of space" overlay with Retry.
+
+Tests:
+- Several units launched together stay on the track path.
+- The counter values are derived correctly from slot states.
+- Filling all 5 slots with parked units triggers LOSE in 'allSlotsBlocked' mode.
+- In 'deadlock' mode, a useful parked unit prevents LOSE and a fully blocked set triggers it.
+- LEVEL_LOST fires exactly once.
+- WIN still beats LOSE in the same step.
+
+Keep npm test green and the build clean. Update the README v1 values table with the new Config keys. Report the root cause of bug 1 and propose a commit message.
+

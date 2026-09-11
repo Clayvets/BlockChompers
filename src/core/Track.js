@@ -147,6 +147,17 @@ export class Track {
     };
   }
 
+  /**
+   * Distance along the loop -> position on the track path (cell units) and heading. Wrap-safe: any distance is
+   * normalised first, so length + d is the same place as d. Positions are linear between neighbouring ring cells,
+   * which are always on the path, so a moving unit never cuts a corner.
+   * @returns {{ x: number, y: number, facing: string }}
+   */
+  positionAt(distance) {
+    const { x, y, facing } = this.poseAt(this.normalize(distance));
+    return { x, y, facing };
+  }
+
   /** @returns {{ side: string, laneIndex: number } | null} the grid lane faced at t, null at corners/margin cells */
   laneAt(t) {
     const cell = this.cellAt(t);

@@ -38,7 +38,9 @@ describe('GameManager', () => {
       expect(u0.state).toBe(UnitState.ACTIVE);
       expect(u0.slotIndex).toBe(0);
       expect(game.getSnapshot().slots[0]).toEqual({ index: 0, status: 'occupied', unitId: 'u0' });
-      expect(events).toEqual([{ type: Events.UNIT_ACTIVATED, payload: { unitId: 'u0', slotIndex: 0 } }]);
+      expect(events.map((e) => e.type)).toEqual([Events.UNIT_ACTIVATED, Events.SLOT_STATE_CHANGED]);
+      expect(events[0].payload).toEqual({ unitId: 'u0', slotIndex: 0 });
+      expect(events[1].payload).toMatchObject({ slotIndex: 0, from: 'free', to: 'occupied' });
     });
 
     it('rejects with NO_FREE_SLOT when all 5 slots are occupied', () => {
@@ -295,7 +297,7 @@ describe('GameManager', () => {
 
     // A balanced level never exhausts a colour while one of its units waits in the reserve, so the blue
     // blocks are removed directly to reach NO_TARGET.
-    it('rejects NO_TARGET, and a reserve unit that cannot take a slot counts toward the deadlock', () => {
+    it('rejects NO_TARGET with LAUNCH_REJECTED (a unit left in the reserve is not out_of_units)', () => {
       const { game, eventBus } = createTestGame({
         level: DIE_AND_PARK_LEVEL,
         config: { rules: { allowNoTargetActivation: false, allowRelaunchParked: false } },
@@ -309,8 +311,7 @@ describe('GameManager', () => {
       expect(game.activateUnit('u2')).toEqual({ ok: false, reason: RejectReason.NO_TARGET });
       expect(events[0]).toEqual({ type: Events.LAUNCH_REJECTED, payload: { unitId: 'u2', reason: RejectReason.NO_TARGET } });
       game.step();
-      expect(game.phase).toBe(GamePhase.LOST);
-      expect(events.find((e) => e.type === Events.LEVEL_LOST).payload).toEqual({ reason: LoseReason.OUT_OF_UNITS });
+      expect(game.phase).toBe(GamePhase.PLAYING); // out_of_units needs an empty reserve
     });
   });
 

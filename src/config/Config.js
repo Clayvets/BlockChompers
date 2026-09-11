@@ -27,8 +27,12 @@ export const Config = Object.freeze({
     speed: 4,
     /** Shared entry corner for every activated unit; a lap runs from here back to here. */
     entry: Object.freeze({ corner: 'SW' }),
-    /** Minimum distance (cells) between consecutive launches. 0 = disabled (pure pass-through). */
-    launchSpacing: 0,
+    /**
+     * Minimum distance (cells) between runners, along the track only: a launch waits until the previous runner is this
+     * far ahead, and a runner never closes in on the unit ahead beyond it (it waits while that unit eats). Keep it at
+     * least render.unitSize so meshes never overlap. 0 = pass-through (units may overlap on the path).
+     */
+    launchSpacing: 1,
   }),
 
   units: Object.freeze({
@@ -59,6 +63,12 @@ export const Config = Object.freeze({
     allowNoTargetActivation: true,
     /** A parked unit (lap finished with capacity left) can go back on the track from its slot: launchFromSlot(). */
     allowRelaunchParked: true,
+    /**
+     * 'allSlotsBlocked': LOSE (slots_blocked) as soon as every slot is blocked and nothing moves, even if a parked unit
+     * could still be relaunched. 'deadlock': in that state, LOSE only if no parked unit could hit a block on a lap.
+     * Both modes also lose with out_of_units (reserve empty, nothing moving, blocks left, no parked unit can hit).
+     */
+    loseMode: 'allSlotsBlocked',
   }),
 
   timing: Object.freeze({
@@ -95,12 +105,6 @@ export const Config = Object.freeze({
     palette: Object.freeze({ 1: 0xff5c5c, 2: 0x4cb5ff }),
     slotColors: Object.freeze({ free: 0x333333, occupied: 0x777777, blocked: 0xaa2222 }),
     track: Object.freeze({
-      /**
-       * Lateral offset per active-slot index: concurrent runners ride parallel sub-lanes. Keep it >= the runner
-       * footprint (~1.73 x unitSize x unit.coneRadiusFactor for the 3-sided cone) and >= label.worldSize so
-       * runners never overlap visually.
-       */
-      laneOffsetPerSlot: 0.64,
       showGuide: true,
       guideColor: 0x1c1c26,
       /** Tint of the shared entry corner tile. */
@@ -145,6 +149,19 @@ export const Config = Object.freeze({
     /** Background tint applied on LEVEL_WON / LEVEL_LOST (event garnish). */
     endTint: Object.freeze({ won: 0x0b2410, lost: 0x2a0b0b }),
     pixelRatioMax: 2,
+    /** Available-slot counter "N/5": plain text right of the slot row. Offsets in cells from the last slot's centre;
+     *  height in cells (width follows the canvas aspect). */
+    slotCounter: Object.freeze({
+      offsetX: 1.4,
+      offsetY: 0,
+      height: 0.7,
+      canvasWidth: 128,
+      canvasHeight: 64,
+      font: 'bold 44px system-ui, sans-serif',
+      color: '#ffffff',
+      outline: '#000000',
+      outlineWidth: 6,
+    }),
     /** Reserve shift: each unit glides one cell toward the front over reserveShiftMs, front to back, starting
      *  reserveShiftStaggerMs after the unit ahead and never closer than one cell to it (meshes never overlap). */
     reserveShiftMs: 160,

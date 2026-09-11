@@ -43,6 +43,8 @@ export class Unit {
     this.t = 0;
     /** Distance travelled this lap; a lap completes at Track.length (never compare t to entryT). */
     this.distanceTraveled = 0;
+    /** distanceTraveled at the start of the latest step; the renderer interpolates prevDistance -> distanceTraveled. */
+    this.prevDistance = 0;
     /** Countdown in whole logic STEPS (not seconds) used by the ACTIVE (launch) and EATING states. */
     this.timer = 0;
   }
@@ -69,6 +71,7 @@ export class Unit {
       reservePos: { ...this.reservePos },
       t: this.t,
       distanceTraveled: this.distanceTraveled,
+      prevDistance: this.prevDistance,
       timer: this.timer,
     };
   }

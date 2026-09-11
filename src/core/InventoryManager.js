@@ -2,6 +2,16 @@ import { Unit, UnitState } from './Unit.js';
 import { RejectReason } from './Events.js';
 
 /**
+ * Available-slot counter derived from a slot list (e.g. snapshot.slots): only FREE slots are available; occupied
+ * (moving) and blocked (parked) slots count as used.
+ * @param {Array<{ status: string }>} slots
+ * @returns {{ free: number, total: number }}
+ */
+export function countFreeSlots(slots) {
+  return { free: slots.filter((slot) => slot.status === 'free').length, total: slots.length };
+}
+
+/**
  * Owns the unit registry, the 4xN reserve grid and the 5 active slots.
  * Pure bookkeeping: it never decides WHEN something happens (GameManager does).
  *

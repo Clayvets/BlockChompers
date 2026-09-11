@@ -2,7 +2,7 @@ import { GridManager } from './GridManager.js';
 import { InventoryManager } from './InventoryManager.js';
 import { Track } from './Track.js';
 import { UnitState } from './Unit.js';
-import { Events, RejectReason, LoseReason } from './Events.js';
+import { Events, RejectReason, LoseReason, LoseMode } from './Events.js';
 import { findValidMoves } from './Simulator.js';
 import { ProgressManager } from './ProgressManager.js';
 
@@ -39,6 +39,9 @@ export class GameManager {
     inventory = new InventoryManager({ config }),
     progress = new ProgressManager({ config }),
   }) {
+    if (!Object.values(LoseMode).includes(config.rules.loseMode)) {
+      throw new RangeError(`Config.rules.loseMode must be one of: ${Object.values(LoseMode).join(', ')}`);
+    }
     this.config = config;
     this.eventBus = eventBus;
     this.grid = grid;
@@ -144,7 +147,8 @@ export class GameManager {
   }
 
   /**
-   * Advance n fixed steps (no-op unless PLAYING). Per step: launch -> move/scan -> resolve win/lose,
+   * Advance n fixed steps (no-op unless PLAYING). Runners move front to back along the track (ties: slot order) and
+   * keep track.launchSpacing behind the unit ahead. Per step: launch -> move/scan -> resolve win/lose,
    * then flush the events collected during the step. Returns the flushed events.
    * @returns {Array<{ type: string, payload: any }>}
    */
@@ -188,6 +192,7 @@ export class GameManager {
     }
     this.inventory.getUnit(unitId).timer = this.#launchSteps;
     this.#emit(Events.UNIT_ACTIVATED, { unitId, slotIndex: result.slotIndex });
+    this.#emitSlotChange(result.slotIndex, 'free', 'occupied');
     if (result.shifted.length > 0) {
       this.#emit(Events.RESERVE_SHIFTED, { column: result.shifted[0].from.col, moves: result.shifted });
     }
@@ -230,6 +235,7 @@ export class GameManager {
     const unit = this.inventory.getUnit(unitId);
     unit.timer = this.#launchSteps;
     this.#emit(Events.UNIT_RELAUNCHED, { unitId, slotIndex, capacity: unit.capacity });
+    this.#emitSlotChange(slotIndex, 'blocked', 'occupied');
     return { ok: true, unitId };
   }
 
@@ -322,21 +328,35 @@ export class GameManager {
   }
 
   /**
-   * Deadlock: blocks remain, no unit is moving, no reserve unit can take a free slot, and no parked unit could eat
-   * on a full lap (its colour is first on no lane; only counted when rules.allowRelaunchParked is on).
+   * Lose check (evaluated after the win check at the end of every step). Nothing may be moving. Then:
+   *   slots_blocked -- every slot is blocked; in rules.loseMode 'deadlock' only if no parked unit could hit a block
+   *   out_of_units  -- the reserve is empty, blocks remain, and no parked unit could hit a block
+   * "Could hit" = relaunching is allowed and the unit's colour is the first non-empty cell of some lane.
    */
   isLost() {
     return this.#loseReason() !== null;
   }
 
   #loseReason() {
-    if (!this.track || this.grid.isCleared() || this.inventory.getRunners().length > 0) return null;
-    if (this.inventory.getReserve().some((unit) => this.#activationBlocker(unit) === null)) return null;
-    if (this.config.rules.allowRelaunchParked) {
-      const exposed = new Set(this.grid.exposedColors());
-      if (this.inventory.getParked().some((unit) => exposed.has(unit.color))) return null;
+    if (!this.track || this.inventory.getRunners().length > 0) return null;
+    const slots = this.inventory.getSlots();
+    if (slots.length > 0 && slots.every((slot) => slot.status === 'blocked')) {
+      const lenient = this.config.rules.loseMode === LoseMode.DEADLOCK;
+      return lenient && this.#parkedCanHit() ? null : LoseReason.SLOTS_BLOCKED;
     }
-    return this.inventory.hasFreeSlot() ? LoseReason.OUT_OF_UNITS : LoseReason.SLOTS_BLOCKED;
+    if (!this.inventory.hasReserve() && !this.grid.isCleared() && !this.#parkedCanHit()) return LoseReason.OUT_OF_UNITS;
+    return null;
+  }
+
+  /** Relaunching is allowed and some parked unit's colour is the first non-empty cell of at least one lane. */
+  #parkedCanHit() {
+    if (!this.config.rules.allowRelaunchParked) return false;
+    const exposed = new Set(this.grid.exposedColors());
+    return this.inventory.getParked().some((unit) => exposed.has(unit.color));
+  }
+
+  #emitSlotChange(slotIndex, from, to) {
+    this.#emit(Events.SLOT_STATE_CHANGED, { slotIndex, from, to, slots: this.inventory.getSlots() });
   }
 
   /**
@@ -345,7 +365,14 @@ export class GameManager {
    */
   getSnapshot() {
     const track = this.track
-      ? { length: this.track.length, entryT: this.track.entryT, margin: this.track.margin, direction: this.track.direction, corners: this.track.getCorners() }
+      ? {
+        length: this.track.length,
+        entryT: this.track.entryT,
+        margin: this.track.margin,
+        direction: this.track.direction,
+        entry: { ...this.track.entry },
+        corners: this.track.getCorners(),
+      }
       : null;
     const units = this.inventory.getAllUnits().map((unit) => {
       const onTrack = unit.state === UnitState.RUNNING || unit.state === UnitState.EATING;
@@ -360,6 +387,8 @@ export class GameManager {
       phase: this.phase,
       stepCount: this.stepCount,
       paused: this.paused,
+      /** Fraction [0, 1) of the next logic step already accumulated by update(); renderers interpolate with it. */
+      stepAlpha: Math.min(1, Math.max(0, this.#accumulator / this.config.timing.fixedStep)),
       /** Id of the loaded level; the renderer keys per-level presentation (Config.render.levels) on it. */
       levelId: this.level ? this.level.id : null,
       grid: this.grid.toState(),
@@ -381,6 +410,7 @@ export class GameManager {
       unit.state = UnitState.RUNNING;
       unit.t = 0;
       unit.distanceTraveled = 0;
+      unit.prevDistance = 0;
       unit.timer = 0;
       this.#emit(Events.UNIT_LAUNCHED, { unitId: unit.id, t: 0 });
     }
@@ -399,19 +429,29 @@ export class GameManager {
     const dist = this.config.track.speed * fixedStep;
     const length = this.track.length;
     const perPass = this.config.rules.blocksPerLanePass;
+    const spacing = this.config.track.launchSpacing;
+    // Front to back along the track (ties: slot order), so each follower is limited by where the unit ahead ended up.
+    const runners = this.inventory.getRunners().sort((a, b) => b.distanceTraveled - a.distanceTraveled || a.slotIndex - b.slotIndex);
+    let ahead = Infinity; // distance of the nearest unit ahead that is still on the track
 
-    for (const unit of this.inventory.getRunners()) {
+    for (const unit of runners) {
+      unit.prevDistance = unit.distanceTraveled;
       if (unit.state === UnitState.EATING) {
         unit.timer -= 1;
-        if (unit.timer > 0) continue;
+        if (unit.timer > 0) {
+          ahead = unit.distanceTraveled;
+          continue;
+        }
         unit.state = UnitState.RUNNING;
         unit.timer = 0;
       }
       if (unit.state !== UnitState.RUNNING) continue;
 
       const remaining = length - unit.distanceTraveled;
-      const completesLap = dist >= remaining - epsilon;
-      const allowed = completesLap ? remaining : dist;
+      // Follow distance: never closer than track.launchSpacing behind the unit ahead (0 = pass-through).
+      const step = spacing > 0 && ahead !== Infinity ? Math.max(0, Math.min(dist, ahead - spacing - unit.distanceTraveled)) : dist;
+      const completesLap = step >= remaining - epsilon;
+      const allowed = completesLap ? remaining : step;
       const tFrom = unit.t;
       const tTo = tFrom + allowed;
 
@@ -441,7 +481,10 @@ export class GameManager {
           break;
         }
       }
-      if (stopped) continue;
+      if (stopped) {
+        if (unit.state === UnitState.EATING) ahead = unit.distanceTraveled; // a dead unit no longer holds anyone back
+        continue;
+      }
 
       unit.t = tTo;
       unit.distanceTraveled = tTo;
@@ -449,6 +492,8 @@ export class GameManager {
         unit.t = length;
         unit.distanceTraveled = length;
         this.#return(unit);
+      } else {
+        ahead = unit.distanceTraveled;
       }
     }
   }
@@ -459,6 +504,7 @@ export class GameManager {
     this.inventory.release(slotIndex);
     this.#emit(Events.UNIT_DIED, { unitId: unit.id, slotIndex });
     this.#emit(Events.SLOT_FREED, { slotIndex });
+    this.#emitSlotChange(slotIndex, 'occupied', 'free');
   }
 
   #return(unit) {
@@ -467,6 +513,7 @@ export class GameManager {
     this.inventory.block(slotIndex);
     this.#emit(Events.UNIT_RETURNED, { unitId: unit.id, slotIndex });
     this.#emit(Events.SLOT_BLOCKED, { slotIndex, unitId: unit.id });
+    this.#emitSlotChange(slotIndex, 'occupied', 'blocked');
   }
 
   #resolvePhase() {

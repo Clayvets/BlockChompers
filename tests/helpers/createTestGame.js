@@ -1,9 +1,12 @@
 import { createConfig } from '../../src/config/Config.js';
 import { createGame } from '../../src/core/createGame.js';
 
-/** Test base: speed 1 cell/s and fixedStep 1 s => one step() == one cell; no launch or eat delays. */
+/**
+ * Test base: speed 1 cell/s and fixedStep 1 s => one step() == one cell; no launch or eat delays, and no launch
+ * spacing, so units activated together run in lockstep (rule tests rely on it; spacing has its own tests).
+ */
 export const TEST_OVERRIDES = Object.freeze({
-  track: { speed: 1 },
+  track: { speed: 1, launchSpacing: 0 },
   timing: { fixedStep: 1, launchDelay: 0, eatDuration: 0 },
 });
 
