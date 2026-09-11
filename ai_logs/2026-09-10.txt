@@ -44,3 +44,9 @@ go
 === 2026-09-10T21:43:55-05:00 | session 567fdf5c ===
 go
 
+=== 2026-09-10T22:24:48-05:00 | session 567fdf5c ===
+Bug: a unit whose capacity is greater than the blocks of its color it can reach finishes its lap, parks and blocks its slot forever. Example: a red unit parks with 2 left after all red blocks are gone. Parking is correct; the real problem is unbalanced levels.
+Fix: in every level, the total capacity of the units of each color must equal exactly the number of blocks of that color in the grid. Turn the R7 dev-only warning into a hard validation error (too much and too little), and rebalance all existing levels so they pass.
+Add tests: validation rejects capacity > blocks and capacity < blocks per color, accepts an exact match, and every level in src/core/levels passes. Don't change the parking or slot rules, and keep npm test green.
+Report which levels you changed and propose a commit message.
+

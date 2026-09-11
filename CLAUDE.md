@@ -41,7 +41,9 @@ npx vitest run -t "outermost block"             # by test name
 
 ## Levels
 
-`src/core/levels/*.js` export `{ id, grid: number[][], units: [{ color, capacity }] }`. `0` = empty, positive ints = colour ids; zero rows/cols are padding. `GridManager.validate` runs before `load`.
+`src/core/levels/*.js` export `{ id, grid: number[][], units: [{ color, capacity }] }`. `0` = empty, positive ints = colour ids; zero rows/cols are padding.
+
+`GameManager.validateLevel` runs inside `loadLevel` before any state changes, and every failure is a hard error: grid structure, unit definitions, and **per-colour balance**. For each colour, the units' capacities must sum exactly to that colour's block count, so spare or missing capacity is rejected. As a consequence a level is won only by running every unit down to 0. A parked unit (one that finishes its lap with capacity left, because its colour is walled in) makes the level unwinnable. To make a unit park in a test, wall its colour in; never give it spare capacity.
 
 ## AI prompt log
 

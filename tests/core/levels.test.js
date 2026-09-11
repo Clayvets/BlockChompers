@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { levels } from '../../src/core/levels/index.js';
 import { GridManager } from '../../src/core/GridManager.js';
+import { GameManager } from '../../src/core/GameManager.js';
 import { Config } from '../../src/config/Config.js';
 import { createTestGame } from '../helpers/createTestGame.js';
 
@@ -28,7 +29,7 @@ describe('shipped levels', () => {
     }
   });
 
-  it('every grid colour has a unit and every unit colour has blocks (no levelWarnings)', () => {
-    for (const level of levels) expect(createTestGame({ level }).game.levelWarnings).toEqual([]);
+  it('every level is balanced: per colour, unit capacity equals the block count (GameManager.validateLevel)', () => {
+    for (const level of levels) expect([level.id, GameManager.validateLevel(level, Config)]).toEqual([level.id, { ok: true, errors: [] }]);
   });
 });

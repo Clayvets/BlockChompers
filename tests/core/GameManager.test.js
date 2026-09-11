@@ -3,9 +3,8 @@ import { createTestGame } from '../helpers/createTestGame.js';
 import { captureEvents } from '../helpers/captureEvents.js';
 import { runUntil } from '../helpers/runUntil.js';
 import {
-  SINGLE_LANE_LEVEL, TWO_COLORS_LEVEL, LOSE_ALL_BLOCKED_LEVEL, LOSE_RESERVE_EMPTY_LEVEL, LONE_RUNNER_LEVEL,
-  TWO_RUNNERS_LEVEL, SIX_UNITS_LEVEL, WIN_WAITS_LEVEL, CONTENTION_LEVEL, SHIELDED_LEVEL, PADDED_LEVEL,
-  BIG_APPETITE_LEVEL, SLOT_MEMORY_LEVEL, MIXED_LEVEL, WALLED_LEVEL,
+  SINGLE_LANE_LEVEL, TWO_COLORS_LEVEL, CONTENTION_LEVEL, TWO_SINGLES_LEVEL, SHIELDED_LEVEL, PADDED_LEVEL,
+  WALLED_LEVEL, DIE_AND_PARK_LEVEL, STACKED_LEVEL, ALL_BLOCKED_LEVEL, DEAD_END_LEVEL,
 } from '../fixtures/levels.js';
 import { GamePhase } from '../../src/core/GameManager.js';
 import { UnitState } from '../../src/core/Unit.js';
@@ -15,10 +14,12 @@ const types = (events) => events.map((e) => e.type);
 const unit = (game, id) => game.getSnapshot().units.find((u) => u.id === id);
 const finish = (game, max = 100) => runUntil(game, (g) => g.phase !== GamePhase.PLAYING, max);
 const consumedBy = (events) => events.filter((e) => e.type === Events.BLOCK_CONSUMED).map((e) => e.payload);
+const WALLED_BORDER = [[0, 0], [0, 1], [0, 2], [1, 0], [1, 2], [2, 0], [2, 1], [2, 2]];
 
 /**
  * Drives the game purely through GameManager: no canvas, no Three.js, no DOM.
  * Test base (createTestGame): speed 1, fixedStep 1, no launch/eat delay => one step == one cell.
+ * All fixtures are balanced levels (see tests/fixtures/levels.js); units park only when walled in.
  */
 describe('GameManager', () => {
   it('constructs and steps without Three.js or a DOM', () => {
@@ -41,7 +42,7 @@ describe('GameManager', () => {
     });
 
     it('rejects with NO_FREE_SLOT when all 5 slots are occupied', () => {
-      const { game, eventBus } = createTestGame({ level: SIX_UNITS_LEVEL });
+      const { game, eventBus } = createTestGame({ level: ALL_BLOCKED_LEVEL });
       for (let i = 0; i < 5; i += 1) expect(game.activateUnit(`u${i}`).ok).toBe(true);
       const events = captureEvents(eventBus);
       expect(game.activateUnit('u5')).toEqual({ ok: false, reason: RejectReason.NO_FREE_SLOT });
@@ -49,14 +50,14 @@ describe('GameManager', () => {
     });
 
     it('rejects with NOT_IN_RESERVE for units that are active, dead or returned', () => {
-      const { game } = createTestGame({ level: MIXED_LEVEL });
+      const { game } = createTestGame({ level: DIE_AND_PARK_LEVEL });
       game.activateUnit('u0');
       game.activateUnit('u1');
       expect(game.activateUnit('u0')).toEqual({ ok: false, reason: RejectReason.NOT_IN_RESERVE }); // active
-      game.step(2); // W row1 is colour 2, W row0 feeds u0 its single block
+      game.step(); // u0 (blue 1) eats (2,0) and dies
       expect(unit(game, 'u0').state).toBe(UnitState.DEAD);
       expect(game.activateUnit('u0').reason).toBe(RejectReason.NOT_IN_RESERVE);
-      game.step(12); // lap of 14 completes for u1, which never found a target
+      game.step(15); // u1 (walled red) completes its lap of 16 and parks
       expect(unit(game, 'u1').state).toBe(UnitState.RETURNED);
       expect(game.phase).toBe(GamePhase.PLAYING);
       expect(game.activateUnit('u1').reason).toBe(RejectReason.NOT_IN_RESERVE);
@@ -97,7 +98,7 @@ describe('GameManager', () => {
     });
 
     it('holds later launches until the previous runner is track.launchSpacing ahead', () => {
-      const { game } = createTestGame({ level: TWO_RUNNERS_LEVEL, config: { track: { launchSpacing: 2 } } });
+      const { game } = createTestGame({ level: WALLED_LEVEL, config: { track: { launchSpacing: 2 } } });
       game.activateUnit('u0');
       game.activateUnit('u1');
       game.step(2);
@@ -134,10 +135,11 @@ describe('GameManager', () => {
       expect(game.getSnapshot().grid.cells).toEqual([[2, 1]]);
       game.step(); // N col1 exposes the colour-1 block
       expect(game.getSnapshot().grid.cells).toEqual([[2, 0]]);
+      expect(unit(game, 'u0').state).toBe(UnitState.DEAD);
+      game.activateUnit('u1');
       finish(game);
-      expect(game.phase).toBe(GamePhase.LOST);
-      expect(game.stepCount).toBe(10);
-      expect(unit(game, 'u0')).toMatchObject({ state: UnitState.RETURNED, capacity: 2 });
+      expect(game.phase).toBe(GamePhase.WON);
+      expect(game.stepCount).toBe(5);
     });
 
     it('ignores empty and zero-padded lanes', () => {
@@ -145,19 +147,19 @@ describe('GameManager', () => {
       game.activateUnit('u0');
       expect(types(game.step(3))).not.toContain(Events.BLOCK_CONSUMED); // W rows 4, 3, 2: empty, colour 2, empty
       expect(consumedBy(game.step()).map((p) => [p.row, p.col])).toEqual([[1, 1]]);
-      finish(game);
+      runUntil(game, (g) => unit(g, 'u0').state === UnitState.DEAD);
       expect(game.stepCount).toBe(16);
-      expect(unit(game, 'u0').state).toBe(UnitState.DEAD);
       expect(game.getSnapshot().grid.remaining).toBe(2);
+      expect(game.phase).toBe(GamePhase.PLAYING);
     });
 
-    it('scans each lane exactly once per lap even when one step covers the whole lap', () => {
-      const { game } = createTestGame({ level: BIG_APPETITE_LEVEL, config: { track: { speed: 30 } } });
+    it('scans each lane exactly once per lap even when one step covers more than a whole lap', () => {
+      const { game } = createTestGame({ level: STACKED_LEVEL, config: { track: { speed: 30 } } });
       game.activateUnit('u0');
-      const events = game.step();
-      expect(consumedBy(events)).toHaveLength(3);
-      expect(unit(game, 'u0')).toMatchObject({ state: UnitState.RETURNED, capacity: 2, distanceTraveled: 12, t: 12 });
-      expect(game.phase).toBe(GamePhase.WON);
+      const events = game.step(); // 30 cells requested, clamped to the 16-cell lap
+      expect(consumedBy(events).map((p) => [p.row, p.col])).toEqual([[1, 0]]); // (1,1) waits behind it on W row1
+      expect(unit(game, 'u0')).toMatchObject({ state: UnitState.RETURNED, capacity: 1, distanceTraveled: 16, t: 16 });
+      expect(game.phase).toBe(GamePhase.PLAYING);
     });
 
     it('resolves same-lane contention in slot order', () => {
@@ -167,7 +169,7 @@ describe('GameManager', () => {
       const events = game.step();
       expect(consumedBy(events).map((p) => [p.unitId, p.col])).toEqual([['u0', 0], ['u1', 1]]);
       expect(unit(game, 'u0').state).toBe(UnitState.DEAD);
-      expect(unit(game, 'u1').capacity).toBe(2);
+      expect(unit(game, 'u1').capacity).toBe(1);
     });
 
     it('pauses on the lane for timing.eatDuration when it is non-zero', () => {
@@ -182,34 +184,35 @@ describe('GameManager', () => {
     });
   });
 
-  describe('death and return', () => {
+  describe('death and parking', () => {
     it('marks the unit DEAD and frees its slot when capacity reaches 0', () => {
-      const { game } = createTestGame({ level: LOSE_RESERVE_EMPTY_LEVEL });
+      const { game } = createTestGame({ level: TWO_SINGLES_LEVEL });
       game.activateUnit('u0');
       const events = game.step();
       expect(unit(game, 'u0').state).toBe(UnitState.DEAD);
       expect(game.getSnapshot().slots[0]).toEqual({ index: 0, status: 'free', unitId: null });
       expect(events.find((e) => e.type === Events.UNIT_DIED).payload).toEqual({ unitId: 'u0', slotIndex: 0 });
       expect(events.find((e) => e.type === Events.SLOT_FREED).payload).toEqual({ slotIndex: 0 });
+      expect(game.phase).toBe(GamePhase.PLAYING);
     });
 
-    it('marks the unit RETURNED and blocks its slot after a full lap with capacity > 0', () => {
-      const { game } = createTestGame({ level: LONE_RUNNER_LEVEL });
-      game.activateUnit('u0');
-      game.step(7);
+    it('parks the unit (RETURNED) and blocks its slot after a full lap with capacity > 0', () => {
+      const { game } = createTestGame({ level: WALLED_LEVEL });
+      game.activateUnit('u0'); // red, walled in: nothing to eat
+      game.step(15);
       expect(unit(game, 'u0').state).toBe(UnitState.RUNNING);
       const events = game.step();
-      expect(unit(game, 'u0')).toMatchObject({ state: UnitState.RETURNED, capacity: 1, distanceTraveled: 8 });
+      expect(unit(game, 'u0')).toMatchObject({ state: UnitState.RETURNED, capacity: 1, distanceTraveled: 16 });
       expect(game.getSnapshot().slots[0]).toEqual({ index: 0, status: 'blocked', unitId: 'u0' });
       expect(types(events)).toEqual(expect.arrayContaining([Events.UNIT_RETURNED, Events.SLOT_BLOCKED]));
       expect(events.find((e) => e.type === Events.SLOT_BLOCKED).payload).toEqual({ slotIndex: 0, unitId: 'u0' });
     });
 
-    it('returns the unit to the SAME slot it was activated into', () => {
-      const { game } = createTestGame({ level: SLOT_MEMORY_LEVEL });
+    it('parks the unit in the SAME slot it was activated into', () => {
+      const { game } = createTestGame({ level: DIE_AND_PARK_LEVEL });
       game.activateUnit('u0'); // slot 0, dies at step 1
-      game.activateUnit('u1'); // slot 1, no target, returns at step 10
-      finish(game);
+      game.activateUnit('u1'); // slot 1, walled in, parks at step 16
+      game.step(16);
       const { slots } = game.getSnapshot();
       expect(slots[0]).toEqual({ index: 0, status: 'free', unitId: null });
       expect(slots[1]).toEqual({ index: 1, status: 'blocked', unitId: 'u1' });
@@ -230,70 +233,100 @@ describe('GameManager', () => {
       expect(events.find((e) => e.type === Events.PHASE_CHANGED).payload).toEqual({ from: GamePhase.PLAYING, to: GamePhase.WON });
     });
 
+    // In a balanced level the grid only clears once every unit has eaten to 0 (and died), so no runner can be
+    // left over; the blocks are removed directly here to exercise the rule on its own.
     it('honours rules.winWaitsForRunners', () => {
-      const eager = createTestGame({ level: WIN_WAITS_LEVEL }).game;
+      const clearRest = (game) => {
+        game.grid.clearCell(0, 1);
+        game.grid.clearCell(0, 2);
+      };
+      const eager = createTestGame({ level: SINGLE_LANE_LEVEL }).game;
       eager.activateUnit('u0');
-      eager.activateUnit('u1');
-      expect(finish(eager)).toBe(1);
-      expect(unit(eager, 'u1').state).toBe(UnitState.RUNNING); // won with runners still out
+      eager.step(); // eats (0,0)
+      clearRest(eager);
+      eager.step();
+      expect(eager.phase).toBe(GamePhase.WON);
+      expect(unit(eager, 'u0').state).toBe(UnitState.RUNNING); // won with a runner still out
 
-      const patient = createTestGame({ level: WIN_WAITS_LEVEL, config: { rules: { winWaitsForRunners: true } } }).game;
+      const patient = createTestGame({ level: SINGLE_LANE_LEVEL, config: { rules: { winWaitsForRunners: true } } }).game;
       patient.activateUnit('u0');
-      patient.activateUnit('u1');
-      expect(finish(patient)).toBe(8);
+      patient.step();
+      clearRest(patient);
+      expect(finish(patient)).toBe(11); // waits for the lap of 12 to finish
       expect(patient.phase).toBe(GamePhase.WON);
-      expect(patient.getSnapshot().units.map((u) => u.state)).toEqual([UnitState.RETURNED, UnitState.RETURNED]);
+      expect(unit(patient, 'u0')).toMatchObject({ state: UnitState.RETURNED, capacity: 2 });
     });
 
     it('enters LOST when all 5 slots are blocked and no unit is running', () => {
-      const { game, eventBus } = createTestGame({ level: LOSE_ALL_BLOCKED_LEVEL });
+      const { game, eventBus } = createTestGame({ level: ALL_BLOCKED_LEVEL });
       const events = captureEvents(eventBus);
       for (let i = 0; i < 5; i += 1) expect(game.activateUnit(`u${i}`).ok).toBe(true);
-      expect(finish(game)).toBe(8);
+      expect(finish(game)).toBe(24);
       expect(game.phase).toBe(GamePhase.LOST);
       expect(game.isLost()).toBe(true);
       expect(game.getSnapshot().slots.map((s) => s.status)).toEqual(Array(5).fill('blocked'));
       expect(events.find((e) => e.type === Events.LEVEL_LOST).payload).toEqual({ reason: LoseReason.ALL_SLOTS_BLOCKED });
-      expect(game.canActivate('u0')).toEqual({ ok: false, reason: RejectReason.NOT_PLAYING });
+      expect(game.canActivate('u5')).toEqual({ ok: false, reason: RejectReason.NOT_PLAYING });
     });
 
     it('enters LOST when the reserve is empty, nothing is running and blocks remain', () => {
-      const { game, eventBus } = createTestGame({ level: LOSE_RESERVE_EMPTY_LEVEL });
+      const { game, eventBus } = createTestGame({ level: WALLED_LEVEL });
       const events = captureEvents(eventBus);
-      game.activateUnit('u0');
-      expect(finish(game)).toBe(1);
+      game.activateUnit('u0'); // slot 0: checks every lane before u1 opens it, so it parks
+      game.activateUnit('u1'); // slot 1: eats all 8 blue and dies at step 14
+      expect(finish(game)).toBe(16);
       expect(game.phase).toBe(GamePhase.LOST);
-      expect(game.getSnapshot().grid.remaining).toBe(1);
+      expect(game.getSnapshot().grid.cells).toEqual([[0, 0, 0], [0, 1, 0], [0, 0, 0]]);
       expect(events.find((e) => e.type === Events.LEVEL_LOST).payload).toEqual({ reason: LoseReason.RESERVE_EMPTY });
     });
 
     it('does NOT lose while a runner is still on the track', () => {
-      const { game } = createTestGame({ level: LONE_RUNNER_LEVEL });
+      const { game } = createTestGame({ level: WALLED_LEVEL });
       game.activateUnit('u0');
-      game.step(7);
+      game.activateUnit('u1');
+      game.step(15); // reserve empty and u1 dead, but u0 is still running
+      expect(unit(game, 'u1').state).toBe(UnitState.DEAD);
+      expect(unit(game, 'u0').state).toBe(UnitState.RUNNING);
       expect(game.phase).toBe(GamePhase.PLAYING);
       expect(game.isLost()).toBe(false);
       game.step();
       expect(game.phase).toBe(GamePhase.LOST);
     });
 
+    // A balanced level never exhausts a colour while one of its units waits in the reserve, so the blue
+    // blocks are removed directly to reach NO_TARGET.
     it('rejects NO_TARGET and loses with NO_VALID_MOVES when allowNoTargetActivation is off', () => {
-      const { game } = createTestGame({ level: LONE_RUNNER_LEVEL, config: { rules: { allowNoTargetActivation: false } } });
-      expect(game.activateUnit('u0')).toEqual({ ok: false, reason: RejectReason.NO_TARGET });
-      const events = game.step();
+      const { game, eventBus } = createTestGame({ level: DIE_AND_PARK_LEVEL, config: { rules: { allowNoTargetActivation: false } } });
+      game.activateUnit('u0');
+      game.activateUnit('u1');
+      game.step(16); // u0 died, u1 parked on the red centre; u2 (blue 7) can still act
+      expect(game.canActivate('u2')).toEqual({ ok: true });
+      for (const [r, c] of WALLED_BORDER) game.grid.clearCell(r, c);
+      const events = captureEvents(eventBus);
+      expect(game.activateUnit('u2')).toEqual({ ok: false, reason: RejectReason.NO_TARGET });
+      expect(events[0]).toEqual({ type: Events.MOVE_REJECTED, payload: { unitId: 'u2', reason: RejectReason.NO_TARGET } });
+      game.step();
       expect(game.phase).toBe(GamePhase.LOST);
       expect(events.find((e) => e.type === Events.LEVEL_LOST).payload).toEqual({ reason: LoseReason.NO_VALID_MOVES });
     });
 
     it('uses the Simulator dry run when rules.detectDeadEndsEarly is on', () => {
-      const relaxed = createTestGame({ level: WALLED_LEVEL }).game;
-      relaxed.step();
-      expect(relaxed.phase).toBe(GamePhase.PLAYING);
+      const play = (strict) => {
+        const { game } = createTestGame({ level: DEAD_END_LEVEL, config: { rules: { detectDeadEndsEarly: strict } } });
+        game.activateUnit('u0'); // blue 8, slot 0: never sees an opening, parks at step 24
+        game.activateUnit('u1'); // red 16, slot 1: eats the outer ring, dies at step 22
+        return { game, events: game.step(24) };
+      };
+      const relaxed = play(false).game;
+      expect(relaxed.phase).toBe(GamePhase.PLAYING); // u2 can still be activated, it just cannot eat
+      expect(unit(relaxed, 'u0')).toMatchObject({ state: UnitState.RETURNED, capacity: 8 });
+      expect(unit(relaxed, 'u1').state).toBe(UnitState.DEAD);
       expect(relaxed.getValidMoves()).toEqual([]);
-      const strict = createTestGame({ level: WALLED_LEVEL, config: { rules: { detectDeadEndsEarly: true } } }).game;
-      const events = strict.step();
-      expect(strict.phase).toBe(GamePhase.LOST);
-      expect(events.find((e) => e.type === Events.LEVEL_LOST).payload).toEqual({ reason: LoseReason.NO_VALID_MOVES });
+
+      const strict = play(true);
+      expect(strict.game.phase).toBe(GamePhase.LOST);
+      expect(strict.game.stepCount).toBe(24);
+      expect(strict.events.find((e) => e.type === Events.LEVEL_LOST).payload).toEqual({ reason: LoseReason.NO_VALID_MOVES });
     });
   });
 
@@ -359,7 +392,9 @@ describe('GameManager', () => {
       expect(() => game.loadLevel({ id: 'bad', grid: [[0, 0]], units: [{ color: 1 }] })).toThrow(/no blocks/);
       expect(() => game.loadLevel({ id: 'bad', grid: [[1]], units: [] })).toThrow(/units/);
       expect(() => game.loadLevel({ id: 'bad', grid: [[1]], units: [{ color: 1, capacity: 0 }] })).toThrow(/capacity/);
+      expect(() => game.loadLevel(null)).toThrow(/level must be an object/);
       expect(game.phase).toBe(GamePhase.IDLE);
+      expect(game.level).toBeNull();
     });
 
     it('reset reloads the same level and keeps versions monotonic', () => {
@@ -375,11 +410,6 @@ describe('GameManager', () => {
       expect(game.grid.version).toBeGreaterThan(version);
       expect(types(events)).toEqual([Events.PHASE_CHANGED, Events.LEVEL_LOADED]);
       expect(unit(game, 'u0').state).toBe(UnitState.RESERVE);
-    });
-
-    it('records levelWarnings for colour mismatches', () => {
-      const level = { id: 'mismatch', grid: [[1, 2]], units: [{ color: 1, capacity: 1 }, { color: 3, capacity: 1 }] };
-      expect(createTestGame({ level }).game.levelWarnings).toEqual(['colour 2 has blocks but no unit', 'unit colour 3 has no blocks']);
     });
   });
 });

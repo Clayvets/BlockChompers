@@ -39,8 +39,54 @@ export class GameManager {
     this.phase = GamePhase.IDLE;
     this.level = null;
     this.stepCount = 0;
-    /** Advisory notes from the last loadLevel (e.g. a grid colour with no unit). */
-    this.levelWarnings = [];
+  }
+
+  /**
+   * Full level check, run by loadLevel before any state changes. Everything here is a hard error:
+   *   - grid structure (GridManager.validate)
+   *   - units: a non-empty array; each colour a positive integer; each capacity (default
+   *     units.defaultCapacity) an integer >= units.minCapacity
+   *   - per-colour balance: the capacities of a colour's units must sum EXACTLY to that colour's block
+   *     count. Too much capacity parks a unit and blocks its slot forever; too little leaves blocks nobody
+   *     can eat. A colour present on only one side counts as 0 on the other.
+   * Consequence: a level is won only by running every unit down to capacity 0, and a parked unit makes
+   * the level unwinnable.
+   * @param {{ id?: string, grid: number[][], units: Array<{ color: number, capacity?: number }> }} level
+   * @param {object} config
+   * @returns {{ ok: boolean, errors: string[] }}
+   */
+  static validateLevel(level, config) {
+    if (!level || typeof level !== 'object') return { ok: false, errors: ['level must be an object'] };
+    const { emptyValue } = config.grid;
+    const { defaultCapacity, minCapacity } = config.units;
+    const errors = [...GridManager.validate(level.grid, { emptyValue }).errors];
+
+    const capacityByColor = new Map();
+    if (!Array.isArray(level.units) || level.units.length === 0) {
+      errors.push('units must be a non-empty array');
+    } else {
+      level.units.forEach((raw, i) => {
+        const def = raw || {};
+        const capacity = def.capacity === undefined ? defaultCapacity : def.capacity;
+        if (!Number.isInteger(def.color) || def.color <= 0) errors.push(`unit ${i}: color must be a positive integer`);
+        else if (!Number.isInteger(capacity) || capacity < minCapacity) errors.push(`unit ${i}: capacity must be an integer >= ${minCapacity}`);
+        else capacityByColor.set(def.color, (capacityByColor.get(def.color) || 0) + capacity);
+      });
+    }
+    if (errors.length > 0) return { ok: false, errors };
+
+    const blocksByColor = new Map();
+    for (const row of level.grid) {
+      for (const value of row) if (value !== emptyValue) blocksByColor.set(value, (blocksByColor.get(value) || 0) + 1);
+    }
+    const colors = [...new Set([...blocksByColor.keys(), ...capacityByColor.keys()])].sort((a, b) => a - b);
+    for (const color of colors) {
+      const blocks = blocksByColor.get(color) || 0;
+      const capacity = capacityByColor.get(color) || 0;
+      if (capacity > blocks) errors.push(`colour ${color}: unit capacity ${capacity} exceeds its ${blocks} block(s) by ${capacity - blocks}`);
+      if (capacity < blocks) errors.push(`colour ${color}: unit capacity ${capacity} is ${blocks - capacity} short of its ${blocks} block(s)`);
+    }
+    return { ok: errors.length === 0, errors };
   }
 
   /**
@@ -48,12 +94,8 @@ export class GameManager {
    * @param {{ id: string, grid: number[][], units: Array<{ color: number, capacity?: number }> }} level
    */
   loadLevel(level) {
-    if (!level || typeof level !== 'object') throw new TypeError('GameManager.loadLevel: level object required');
-    const { ok, errors } = GridManager.validate(level.grid, { emptyValue: this.config.grid.emptyValue });
-    if (!ok) throw new Error(`GameManager.loadLevel(${level.id}): ${errors.join('; ')}`);
-    if (!Array.isArray(level.units) || level.units.length === 0) {
-      throw new Error(`GameManager.loadLevel(${level.id}): units must be a non-empty array`);
-    }
+    const { ok, errors } = GameManager.validateLevel(level, this.config);
+    if (!ok) throw new Error(`GameManager.loadLevel(${level && level.id}): ${errors.join('; ')}`);
     this.level = level;
     this.grid.load(level.grid);
     this.inventory.load(level.units);
@@ -66,7 +108,6 @@ export class GameManager {
     this.#accumulator = 0;
     this.#pendingEvents = [];
     this.#movesCache = { gridVersion: -1, inventoryVersion: -1, moves: [] };
-    this.levelWarnings = this.#collectWarnings();
 
     this.#setPhase(GamePhase.PLAYING);
     this.#emit(Events.LEVEL_LOADED, { snapshot: this.getSnapshot() });
@@ -333,12 +374,4 @@ export class GameManager {
     else this.eventBus.emit(type, payload);
   }
 
-  #collectWarnings() {
-    const gridColors = new Set(this.grid.getColors());
-    const unitColors = new Set(this.inventory.getAllUnits().map((unit) => unit.color));
-    const warnings = [];
-    for (const color of gridColors) if (!unitColors.has(color)) warnings.push(`colour ${color} has blocks but no unit`);
-    for (const color of unitColors) if (!gridColors.has(color)) warnings.push(`unit colour ${color} has no blocks`);
-    return warnings;
-  }
 }
