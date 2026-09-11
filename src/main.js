@@ -1,5 +1,6 @@
 import { Config } from './config/Config.js';
 import { createGame } from './core/createGame.js';
+import { Events } from './core/Events.js';
 import { level01 } from './core/levels/index.js';
 import { Renderer } from './render/Renderer.js';
 import { InputManager } from './input/InputManager.js';
@@ -13,14 +14,27 @@ const { game, eventBus, config } = createGame({ config: Config, level: level01 }
 
 const renderer = new Renderer({ canvas, config });
 const input = new InputManager({ canvas, renderer, gameManager: game });
-const ui = new UIManager({ root: uiRoot, eventBus, gameManager: game });
+const ui = new UIManager({ root: uiRoot, eventBus, gameManager: game, config });
 
 renderer.init();
 renderer.resize(window.innerWidth, window.innerHeight);
-const unbindRendererEvents = renderer.bindEvents(eventBus);
+const unbinds = [renderer.bindEvents(eventBus)];
 input.attach();
 ui.mount();
 ui.onRestart(() => game.reset());
+
+// Clicks are ignored while the win/lose overlay is up (the game would reject them anyway).
+unbinds.push(
+  eventBus.on(Events.LEVEL_WON, () => input.setEnabled(false)),
+  eventBus.on(Events.LEVEL_LOST, () => input.setEnabled(false)),
+  eventBus.on(Events.LEVEL_LOADED, () => input.setEnabled(true)),
+);
+
+if (config.debug.logEvents) {
+  for (const type of Object.values(Events)) {
+    unbinds.push(eventBus.on(type, (payload) => console.debug(`[event] ${type}`, payload)));
+  }
+}
 
 // Fixed-step logic driven by real time; rendering reads the snapshot every frame.
 let running = true;
@@ -41,13 +55,15 @@ function frame(now) {
 }
 requestAnimationFrame(frame);
 
-window.addEventListener('resize', () => renderer.resize(window.innerWidth, window.innerHeight));
+const onResize = () => renderer.resize(window.innerWidth, window.innerHeight);
+window.addEventListener('resize', onResize);
 
 // Vite HMR: tear the old graph down so a reload doesn't leave two loops running.
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     running = false;
-    unbindRendererEvents();
+    window.removeEventListener('resize', onResize);
+    unbinds.forEach((unbind) => unbind());
     input.detach();
     ui.unmount();
     renderer.dispose();

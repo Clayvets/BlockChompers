@@ -1,11 +1,17 @@
 import * as THREE from 'three';
 
+const LAY_FLAT = -Math.PI / 2;
+/** thetaStart that centres an odd-sided cone base on the heading axis (symmetric footprint from above). */
+const SYMMETRIC_BASE = Math.PI / 2;
+
 /**
  * The reskin seam. Every visual in the scene is created here from Three.js primitives; swapping
  * this class (same interface) for one that loads GLTF models re-skins the game without touching
  * core or Renderer.
  *
- * Every mesh gets userData = { kind, id } so Renderer.pick can map hits back to logical ids.
+ * Geometries and materials are cached by key and shared; only capacity labels own their resources
+ * (one canvas per unit) and must be released with disposeLabel(). Meshes carry userData = { kind, id }
+ * so Renderer.pick can map hits back to logical ids.
  */
 export class PrimitiveFactory {
   constructor(config) {
@@ -15,32 +21,124 @@ export class PrimitiveFactory {
     this._cache = new Map();
   }
 
-  /** A grid block: BoxGeometry(cellSize - gap, blockHeight, cellSize - gap) x palette[color]; userData.kind = 'block'. */
+  #cached(key, create) {
+    let value = this._cache.get(key);
+    if (!value) {
+      value = create();
+      this._cache.set(key, value);
+    }
+    return value;
+  }
+
+  #hex(color) {
+    const hex = this.render.palette[color];
+    if (hex === undefined) throw new Error(`PrimitiveFactory: render.palette has no entry for colour ${color}`);
+    return hex;
+  }
+
+  #lit(hex) {
+    return this.#cached(`lit:${hex}`, () => new THREE.MeshLambertMaterial({ color: hex }));
+  }
+
+  #flat(hex) {
+    return this.#cached(`flat:${hex}`, () => new THREE.MeshBasicMaterial({ color: hex }));
+  }
+
+  #tileGeometry(scale) {
+    const edge = this.render.cellSize * scale;
+    return this.#cached(`tile:${edge}`, () => new THREE.PlaneGeometry(edge, edge).rotateX(LAY_FLAT));
+  }
+
+  /** A grid block: BoxGeometry(cellSize - gap, blockHeight, cellSize - gap) x palette[color]. */
   block(color, row, col) {
-    // TODO(impl)
-    return new THREE.Mesh();
+    const { cellSize, gap, blockHeight } = this.render;
+    const geometry = this.#cached('block', () => new THREE.BoxGeometry(cellSize - gap, blockHeight, cellSize - gap));
+    const mesh = new THREE.Mesh(geometry, this.#lit(this.#hex(color)));
+    mesh.userData = { kind: 'block', id: `${row},${col}` };
+    return mesh;
   }
 
-  /** A unit ("chomper"): e.g. a ConeGeometry pointing +x so rotation.y encodes `facing`; userData = { kind: 'unit', id }. */
+  /** A unit ("chomper"): a cone lying on its side with the apex on +x, so rotation.y encodes heading. */
   unit(color, id) {
-    // TODO(impl)
-    return new THREE.Mesh();
+    const { unitSize, unit } = this.render;
+    const geometry = this.#cached('unit', () =>
+      new THREE.ConeGeometry(unitSize * unit.coneRadiusFactor, unitSize, unit.radialSegments, 1, false, SYMMETRIC_BASE).rotateZ(LAY_FLAT),
+    );
+    const group = new THREE.Group();
+    group.add(new THREE.Mesh(geometry, this.#lit(this.#hex(color))));
+    group.userData = { kind: 'unit', id };
+    return group;
   }
 
-  /** Active-slot marker: PlaneGeometry x slotColors[status]; userData = { kind: 'slot', id: index }. */
+  /** Active-slot marker tinted by status; userData = { kind: 'slot', id: index }. */
   slot(status, index) {
-    // TODO(impl)
-    return new THREE.Mesh();
+    const mesh = new THREE.Mesh(this.#tileGeometry(this.render.inventory.tileScale), this.slotMaterial(status));
+    mesh.userData = { kind: 'slot', id: index };
+    return mesh;
   }
 
-  /** Optional track guide tile (render.track.showGuide). */
-  trackTile() {
-    // TODO(impl)
-    return new THREE.Mesh();
+  /** Shared material for a slot status ('free' | 'occupied' | 'blocked'). */
+  slotMaterial(status) {
+    return this.#flat(this.render.slotColors[status]);
+  }
+
+  /** Background tile under a reserve position. */
+  reserveTile() {
+    const { tileScale, tileColor } = this.render.inventory;
+    return new THREE.Mesh(this.#tileGeometry(tileScale), this.#flat(tileColor));
+  }
+
+  /** Track guide tile; the entry corner gets render.track.entryColor. */
+  trackTile(isEntry = false) {
+    const { tileScale, guideColor, entryColor } = this.render.track;
+    return new THREE.Mesh(this.#tileGeometry(tileScale), this.#flat(isEntry ? entryColor : guideColor));
+  }
+
+  /** A camera-facing number sprite (own canvas + texture), always drawn on top. */
+  label(text) {
+    const { canvasSize, worldSize } = this.render.label;
+    const canvas = document.createElement('canvas');
+    canvas.width = canvasSize;
+    canvas.height = canvasSize;
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true }));
+    sprite.scale.set(worldSize, worldSize, 1);
+    sprite.renderOrder = 10;
+    sprite.userData = { canvas, text: null };
+    this.setLabel(sprite, text);
+    return sprite;
+  }
+
+  /** Redraw a label only when its text changed. */
+  setLabel(sprite, text) {
+    if (sprite.userData.text === text) return;
+    const { canvasSize, font, color, outline, outlineWidth } = this.render.label;
+    const ctx = sprite.userData.canvas.getContext('2d');
+    const mid = canvasSize / 2;
+    ctx.clearRect(0, 0, canvasSize, canvasSize);
+    ctx.font = font;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = outlineWidth;
+    ctx.strokeStyle = outline;
+    ctx.strokeText(text, mid, mid);
+    ctx.fillStyle = color;
+    ctx.fillText(text, mid, mid);
+    sprite.material.map.needsUpdate = true;
+    sprite.userData.text = text;
+  }
+
+  /** Release a label's own texture and material (shared resources are left alone). */
+  disposeLabel(sprite) {
+    sprite.material.map.dispose();
+    sprite.material.dispose();
   }
 
   /** Dispose every cached geometry/material. */
   dispose() {
-    // TODO(impl)
+    for (const resource of this._cache.values()) resource.dispose();
+    this._cache.clear();
   }
 }

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-BlockChompers is a hyper-casual browser puzzle game built with Three.js (r185) and bundled with Vite 8. Plain JavaScript ES modules, no framework, no TypeScript. The codebase is currently an **architectural skeleton**: every class exposes its final public API with `// TODO(impl)` bodies, and the intended rules live in the JSDoc on each method. Fill bodies in only together with the matching test in `tests/core` (turn its `it.todo` into a real `it` first).
+BlockChompers is a hyper-casual browser puzzle game built with Three.js (r185) and bundled with Vite 8. Plain JavaScript ES modules, no framework, no TypeScript. v1 is a playable primitive blockout (grid, perimeter track, units, 4xN reserve + 5 active slots, win/loss). `docs/IMPLEMENTATION_PLAN.md` records the design, the step order and the numeric invariants that keep core deterministic. Change core behaviour only together with a headless test in `tests/core`.
 
 ## Commands
 
@@ -19,7 +19,7 @@ npx vitest run tests/core/GridManager.test.js   # one file
 npx vitest run -t "outermost block"             # by test name
 ```
 
-`npm run build` will warn that a chunk exceeds 500 kB once the renderer uses more of Three.js. Expected: Three.js is bundled whole. Not a failure.
+`npm run build` warns that a chunk exceeds 500 kB. Expected: Three.js is bundled whole. Not a failure.
 
 ## Architecture
 
@@ -51,3 +51,5 @@ npx vitest run -t "outermost block"             # by test name
 
 - Code, identifiers, comments and the HTML `lang` are English. The project started in Spanish; rename any leftover Spanish names.
 - The canvas id `#canvas-game` and the overlay id `#ui-root` are shared between `index.html` and `src/main.js`; rename both or neither.
+- Every tunable lives in `Config.js`, including render layout, colours and UI copy (`render`, `ui`). The stylesheet in `index.html` is layout-only; `UIManager` publishes the colours as CSS custom properties on `#ui-root`.
+- Runner sub-lanes: keep `render.track.laneOffsetPerSlot` at least the runner footprint and `render.label.worldSize`, or concurrent runners overlap on screen.

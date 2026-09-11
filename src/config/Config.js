@@ -2,7 +2,7 @@
  * Central, frozen game configuration.
  *
  * Sections read by the pure logic layer (src/core): grid, track, units, inventory, rules, timing.
- * Sections read by the presentation layer only (src/render, src/ui): render, debug.
+ * Sections read by the presentation layer only (src/render, src/ui): render, ui, debug.
  * Core code must never read `render`.
  *
  * Units of measure: distances are CELL UNITS (one grid cell = 1); durations are SECONDS;
@@ -85,12 +85,75 @@ export const Config = Object.freeze({
     palette: Object.freeze({ 1: 0xff5c5c, 2: 0x4cb5ff }),
     slotColors: Object.freeze({ free: 0x333333, occupied: 0x777777, blocked: 0xaa2222 }),
     track: Object.freeze({
-      /** Lateral offset per active-slot index: concurrent runners ride parallel sub-lanes and never overlap. */
-      laneOffsetPerSlot: 0.18,
+      /**
+       * Lateral offset per active-slot index: concurrent runners ride parallel sub-lanes. Keep it >= the runner
+       * footprint (~1.73 x unitSize x unit.coneRadiusFactor for the 3-sided cone) and >= label.worldSize so
+       * runners never overlap visually.
+       */
+      laneOffsetPerSlot: 0.64,
       showGuide: true,
+      guideColor: 0x1c1c26,
+      /** Tint of the shared entry corner tile. */
+      entryColor: 0x3a3a58,
+      /** Guide tile edge as a fraction of a cell. */
+      tileScale: 0.9,
     }),
-    camera: Object.freeze({ height: 20, padding: 2, near: 0.1, far: 100 }),
-    inventory: Object.freeze({ gapBelowGrid: 2, slotGap: 0.2 }),
+    camera: Object.freeze({ height: 20, padding: 1, near: 0.1, far: 100 }),
+    inventory: Object.freeze({
+      /** Cells between the outermost runner sub-lane and the top of the inventory panel. */
+      gapBelowGrid: 0.6,
+      /** Extra space between neighbouring slots / reserve tiles, in cells (pitch = 1 + slotGap). */
+      slotGap: 0.2,
+      /** Panel top -> slot row centre, in cells. */
+      slotsRowOffset: 0.5,
+      /** Panel top -> first reserve row centre, in cells. */
+      reserveRowOffset: 2.1,
+      tileColor: 0x16161e,
+      /** Slot / reserve tile edge as a fraction of a cell. */
+      tileScale: 0.9,
+    }),
+    /** Physically based (three r155+): lit diffuse ~ colour x intensity / PI, so ~2 + ~1.5 keeps palette colours true. */
+    lights: Object.freeze({
+      ambient: 0xffffff,
+      ambientIntensity: 2,
+      directional: 0xffffff,
+      directionalIntensity: 1.5,
+      directionalPosition: Object.freeze([4, 10, 6]),
+    }),
+    /** The "chomper": a cone lying on its side, apex = heading. */
+    unit: Object.freeze({ radialSegments: 3, coneRadiusFactor: 0.45 }),
+    /** Capacity number drawn on a CanvasTexture sprite above each unit. */
+    label: Object.freeze({
+      canvasSize: 64,
+      font: 'bold 42px system-ui, sans-serif',
+      color: '#ffffff',
+      outline: '#000000',
+      outlineWidth: 8,
+      worldSize: 0.6,
+      yOffset: 1.5,
+    }),
+    /** Background tint applied on LEVEL_WON / LEVEL_LOST (event garnish). */
+    endTint: Object.freeze({ won: 0x0b2410, lost: 0x2a0b0b }),
+    pixelRatioMax: 2,
+  }),
+
+  /** DOM overlay copy and colours (read by src/ui only). */
+  ui: Object.freeze({
+    text: Object.freeze({ blocksLeft: 'Blocks left', slots: 'Slots', won: 'Level cleared!', lost: 'Level lost', restart: 'Restart' }),
+    loseReasons: Object.freeze({
+      'all-slots-blocked': 'All active slots are blocked.',
+      'reserve-empty': 'The reserve is empty.',
+      'no-valid-moves': 'No unit can reach a block.',
+    }),
+    colors: Object.freeze({
+      text: '#ffffff',
+      panel: 'rgba(0, 0, 0, 0.75)',
+      backdrop: 'rgba(0, 0, 0, 0.35)',
+      won: '#7cff8a',
+      lost: '#ff7c7c',
+      button: '#ffffff',
+      buttonText: '#000000',
+    }),
   }),
 
   debug: Object.freeze({ logEvents: false }),

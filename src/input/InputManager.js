@@ -1,6 +1,6 @@
 /**
  * Translates pointer input into logical commands. Knows nothing about Three.js: the renderer does
- * the raycast (pick); this class only forwards the result to GameManager.
+ * the raycast (pick); this class only forwards unit hits to GameManager.activateUnit.
  */
 export class InputManager {
   #enabled = true;
@@ -30,14 +30,23 @@ export class InputManager {
     this.#enabled = enabled;
   }
 
-  /** Pointer event -> normalised device coords in [-1, 1]. */
+  /** Pointer event -> normalised device coords in [-1, 1] (y up). */
   toNdc(event) {
-    // TODO(impl)
-    return { x: 0, y: 0 };
+    const rect = this.canvas.getBoundingClientRect();
+    return {
+      x: ((event.clientX - rect.left) / rect.width) * 2 - 1,
+      y: -((event.clientY - rect.top) / rect.height) * 2 + 1,
+    };
   }
 
-  /** if enabled: renderer.pick(ndc) -> kind === 'unit' => gameManager.activateUnit(id). Everything else is ignored. */
+  /**
+   * Primary-button press on a unit => gameManager.activateUnit(id). Everything else is ignored.
+   * @returns {{ ok: boolean, reason?: string } | null} the command result, or null when nothing was issued
+   */
   handlePointerDown(event) {
-    // TODO(impl)
+    if (!this.#enabled || event.button > 0) return null;
+    const { x, y } = this.toNdc(event);
+    const hit = this.renderer.pick(x, y);
+    return hit && hit.kind === 'unit' ? this.gameManager.activateUnit(hit.id) : null;
   }
 }

@@ -13,12 +13,74 @@
       canvas {
         display: block;
       }
+      /* Layout only: colours and copy come from Config.ui via CSS custom properties set by UIManager. */
       #ui-root {
         position: fixed;
         inset: 0;
         pointer-events: none; /* overlay children that need clicks opt back in */
         font: 16px/1.4 system-ui, sans-serif;
-        color: #fff;
+        color: var(--ui-text, #fff);
+      }
+      #ui-root [hidden] {
+        display: none !important;
+      }
+      #ui-root .hud {
+        position: absolute;
+        top: 12px;
+        left: 12px;
+        padding: 8px 12px;
+        border-radius: 8px;
+        background: var(--ui-panel);
+      }
+      #ui-root .hud-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      #ui-root .hud-dots {
+        display: inline-flex;
+        gap: 4px;
+      }
+      #ui-root .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+      }
+      #ui-root .dot-free { background: var(--slot-free); }
+      #ui-root .dot-occupied { background: var(--slot-occupied); }
+      #ui-root .dot-blocked { background: var(--slot-blocked); }
+      #ui-root .overlay {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--ui-backdrop);
+        pointer-events: auto;
+      }
+      #ui-root .overlay-card {
+        padding: 24px 32px;
+        border-radius: 12px;
+        background: var(--ui-panel);
+        text-align: center;
+      }
+      #ui-root .overlay-title {
+        margin: 0 0 8px;
+        font-size: 28px;
+      }
+      #ui-root .overlay[data-result='won'] .overlay-title { color: var(--ui-won); }
+      #ui-root .overlay[data-result='lost'] .overlay-title { color: var(--ui-lost); }
+      #ui-root .overlay-reason {
+        margin: 0 0 16px;
+      }
+      #ui-root .overlay-button {
+        font: inherit;
+        padding: 8px 20px;
+        border: 0;
+        border-radius: 6px;
+        background: var(--ui-button);
+        color: var(--ui-button-text);
+        cursor: pointer;
       }
     </style>
   </head>
