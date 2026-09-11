@@ -43,8 +43,11 @@ export const Config = Object.freeze({
     reserveCols: 4,
     /** Strict limit of the active playing zone. */
     activeSlots: 5,
-    /** When a reserve unit leaves, shift the remaining units toward the front. */
-    compactReserve: false,
+    /**
+     * Only the front row of each reserve column can be launched: core rejects other picks with NOT_FRONT and the
+     * renderer does not raycast them. When a unit leaves, the units behind it in its column move up one cell.
+     */
+    frontOnlyPick: true,
   }),
 
   rules: Object.freeze({
@@ -54,8 +57,8 @@ export const Config = Object.freeze({
     winWaitsForRunners: false,
     /** Allow activating a unit whose colour has no remaining blocks (a guaranteed slot block). */
     allowNoTargetActivation: true,
-    /** Declare a loss as soon as no reserve unit could eat anything (Simulator heuristic). */
-    detectDeadEndsEarly: false,
+    /** A parked unit (lap finished with capacity left) can go back on the track from its slot: launchFromSlot(). */
+    allowRelaunchParked: true,
   }),
 
   timing: Object.freeze({
@@ -142,6 +145,10 @@ export const Config = Object.freeze({
     /** Background tint applied on LEVEL_WON / LEVEL_LOST (event garnish). */
     endTint: Object.freeze({ won: 0x0b2410, lost: 0x2a0b0b }),
     pixelRatioMax: 2,
+    /** Reserve shift: each unit glides one cell toward the front over reserveShiftMs, front to back, starting
+     *  reserveShiftStaggerMs after the unit ahead and never closer than one cell to it (meshes never overlap). */
+    reserveShiftMs: 160,
+    reserveShiftStaggerMs: 60,
     /**
      * Per-level presentation overrides keyed by level id (merged over the defaults above). Level files in
      * src/core/levels stay pure: colour ids there are only numbers, and their meaning lives here.

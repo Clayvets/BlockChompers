@@ -1,4 +1,4 @@
-import { INWARD } from './Sides.js';
+import { Side, INWARD } from './Sides.js';
 
 /** Edge cell where an inward walk starts, per side; `limit` is the valid lane range. */
 const EDGE_START = {
@@ -157,6 +157,23 @@ export class GridManager {
   /** Remaining blocks, optionally for one colour. */
   countRemaining(color) {
     return color === undefined ? this.#remaining : this.#colorCounts.get(color) || 0;
+  }
+
+  /**
+   * Colours that are the first non-empty cell of at least one lane, from any side: exactly what a unit on a
+   * full lap could eat. Used by the deadlock (LOSE) check.
+   * @returns {number[]} ascending colour ids
+   */
+  exposedColors() {
+    const colors = new Set();
+    const lanes = [[Side.N, this.cols], [Side.S, this.cols], [Side.W, this.rows], [Side.E, this.rows]];
+    for (const [side, count] of lanes) {
+      for (let lane = 0; lane < count; lane += 1) {
+        const head = this.peekFromEdge(side, lane);
+        if (head) colors.add(head.color);
+      }
+    }
+    return [...colors].sort((a, b) => a - b);
   }
 
   /** Win condition: a loaded grid with no blocks left. */

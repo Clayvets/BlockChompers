@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { InventoryManager } from '../../src/core/InventoryManager.js';
-import { Config, createConfig } from '../../src/config/Config.js';
+import { Config } from '../../src/config/Config.js';
 import { UnitState } from '../../src/core/Unit.js';
 import { RejectReason } from '../../src/core/Events.js';
 
@@ -51,8 +51,8 @@ describe('InventoryManager', () => {
   describe('activate', () => {
     it('moves a RESERVE unit to ACTIVE, occupies the lowest free slot and records slotIndex', () => {
       const inv = make(defs(3));
-      expect(inv.activate('u1')).toEqual({ ok: true, slotIndex: 0 });
-      expect(inv.activate('u0')).toEqual({ ok: true, slotIndex: 1 });
+      expect(inv.activate('u1')).toEqual({ ok: true, slotIndex: 0, shifted: [] });
+      expect(inv.activate('u0')).toEqual({ ok: true, slotIndex: 1, shifted: [] });
       expect(inv.getUnit('u1')).toMatchObject({ state: UnitState.ACTIVE, slotIndex: 0 });
       expect(inv.getSlots()[0]).toEqual({ index: 0, status: 'occupied', unitId: 'u1' });
       expect(inv.getReserve().map((u) => u.id)).toEqual(['u2']);
@@ -73,14 +73,30 @@ describe('InventoryManager', () => {
       expect(inv.activate('u0')).toEqual({ ok: false, slotIndex: -1, reason: RejectReason.NOT_IN_RESERVE });
     });
 
-    it('re-lays the reserve when inventory.compactReserve is on', () => {
-      const inv = make(defs(5), createConfig({ inventory: { compactReserve: true } }));
-      inv.activate('u1');
-      expect(inv.getUnit('u2').reservePos).toEqual({ col: 1, row: 0 });
-      expect(inv.getUnit('u4').reservePos).toEqual({ col: 3, row: 0 });
-      const plain = make(defs(5));
-      plain.activate('u1');
-      expect(plain.getUnit('u4').reservePos).toEqual({ col: 0, row: 1 });
+    it('moves the units behind a departed unit up one cell in its column only', () => {
+      const inv = make(defs(10)); // col 0 = u0, u4, u8; col 1 = u1, u5, u9; cols 2-3 = u2, u6 / u3, u7
+      expect(inv.activate('u0').shifted).toEqual([
+        { unitId: 'u4', from: { col: 0, row: 1 }, to: { col: 0, row: 0 } },
+        { unitId: 'u8', from: { col: 0, row: 2 }, to: { col: 0, row: 1 } },
+      ]);
+      expect(inv.getUnit('u5').reservePos).toEqual({ col: 1, row: 1 });
+      expect(inv.getFrontUnits().map((u) => u.id)).toEqual(['u1', 'u2', 'u3', 'u4']);
+      expect([inv.isFront('u4'), inv.isFront('u8'), inv.isFront('u0')]).toEqual([true, false, false]);
+      expect(inv.activate('u3').shifted).toEqual([{ unitId: 'u7', from: { col: 3, row: 1 }, to: { col: 3, row: 0 } }]);
+    });
+
+    it('relaunch turns a parked unit back to ACTIVE and its slot back to occupied', () => {
+      const inv = make(defs(2));
+      inv.activate('u0');
+      expect(inv.relaunch(0)).toEqual({ ok: false, reason: RejectReason.NOT_PARKED }); // occupied, not parked
+      inv.getUnit('u0').state = UnitState.RETURNED;
+      inv.block(0);
+      expect(inv.getParked().map((u) => u.id)).toEqual(['u0']);
+      expect(inv.relaunch(0)).toEqual({ ok: true, unitId: 'u0' });
+      expect(inv.getSlots()[0]).toEqual({ index: 0, status: 'occupied', unitId: 'u0' });
+      expect(inv.getUnit('u0')).toMatchObject({ state: UnitState.ACTIVE, slotIndex: 0 });
+      expect(inv.relaunch(1)).toEqual({ ok: false, reason: RejectReason.NOT_PARKED }); // free
+      expect(inv.relaunch(9)).toEqual({ ok: false, reason: RejectReason.UNKNOWN_SLOT });
     });
   });
 

@@ -24,8 +24,12 @@ export const Events = Object.freeze({
   SLOT_FREED: 'slot:freed',
   /** { slotIndex, unitId } */
   SLOT_BLOCKED: 'slot:blocked',
-  /** { unitId, reason } -- see RejectReason */
-  MOVE_REJECTED: 'move:rejected',
+  /** { unitId?, slotIndex?, reason } -- activateUnit / launchFromSlot refused; see RejectReason */
+  LAUNCH_REJECTED: 'launch:rejected',
+  /** { column, moves: [{ unitId, from: { col, row }, to: { col, row } }] } -- units behind a departed unit moved up */
+  RESERVE_SHIFTED: 'reserve:shifted',
+  /** { unitId, slotIndex, capacity } -- a parked unit went back on the track from its slot */
+  UNIT_RELAUNCHED: 'unit:relaunched',
   /** {} -- simulation frozen by GameManager.pause(); LEVEL_LOADED also implies unpaused */
   GAME_PAUSED: 'game:paused',
   /** {} */
@@ -40,14 +44,22 @@ export const Events = Object.freeze({
   LEVEL_LOST: 'level:lost',
 });
 
-/** Reasons a command is rejected: MOVE_REJECTED payload for activateUnit, `reason` in every command result. */
+/** Reasons a command is rejected: LAUNCH_REJECTED payload for activateUnit / launchFromSlot, `reason` in every command result. */
 export const RejectReason = Object.freeze({
   NOT_PLAYING: 'not-playing',
   UNKNOWN_UNIT: 'unknown-unit',
   NOT_IN_RESERVE: 'not-in-reserve',
   NO_FREE_SLOT: 'no-free-slot',
   NO_TARGET: 'no-target',
-  /** activateUnit while the simulation is paused */
+  /** activateUnit on a reserve unit that is not the front of its column (inventory.frontOnlyPick) */
+  NOT_FRONT: 'not-front',
+  /** launchFromSlot on a slot without a parked unit */
+  NOT_PARKED: 'not-parked',
+  /** launchFromSlot with an index outside the active slots */
+  UNKNOWN_SLOT: 'unknown-slot',
+  /** launchFromSlot while rules.allowRelaunchParked is off */
+  RELAUNCH_DISABLED: 'relaunch-disabled',
+  /** activateUnit / launchFromSlot while the simulation is paused */
   PAUSED: 'paused',
   /** continueToNextLevel before the level is won (or after the reward was taken) */
   NOT_WON: 'not-won',
@@ -57,9 +69,13 @@ export const RejectReason = Object.freeze({
   NO_LEVELS: 'no-levels',
 });
 
-/** Reasons a level is lost (payload of LEVEL_LOST). */
+/**
+ * Reasons a level is lost (payload of LEVEL_LOST). A loss is a deadlock: blocks remain, no unit is moving, no reserve
+ * unit can take a free slot, and no parked unit could eat on a full lap (its colour is first on no lane).
+ */
 export const LoseReason = Object.freeze({
-  ALL_SLOTS_BLOCKED: 'all-slots-blocked',
-  RESERVE_EMPTY: 'reserve-empty',
-  NO_VALID_MOVES: 'no-valid-moves',
+  /** ...because every slot is taken */
+  SLOTS_BLOCKED: 'slots-blocked',
+  /** ...although a slot is free: no reserve unit left that can take it */
+  OUT_OF_UNITS: 'out-of-units',
 });

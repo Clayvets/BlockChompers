@@ -37,8 +37,11 @@ describe('shipped levels', () => {
     }
   });
 
-  it('level files hold only data: id, grid, units', () => {
-    for (const level of levels) expect(Object.keys(level).sort()).toEqual(['grid', 'id', 'units']);
+  it('level files hold only data: id, name, grid, units', () => {
+    for (const level of levels) {
+      expect(Object.keys(level).sort()).toEqual(['grid', 'id', 'name', 'units']);
+      expect(typeof level.name === 'string' && level.name.length > 0).toBe(true);
+    }
   });
 
   it('every level is balanced: per colour, unit capacity equals the block count (GameManager.validateLevel)', () => {

@@ -87,3 +87,13 @@ Proof: add a headless test that plays this level to WIN with a scripted launch o
 Add the level to the progression after the existing ones. Keep npm test green and the build clean, and check that it fits the screen in portrait.
 Report the block count per color, the reserve you chose, and a proposed commit message.
 
+=== 2026-09-10T23:42:20-05:00 | session 567fdf5c ===
+Task: apply 4 gameplay changes without breaking the core/render separation. src/core stays pure and deterministic, and every new value lives in Config.js.
+1) Pickable units: only the front row of each reserve column and the units parked in the 5 slots can be clicked. Enforce this in core (inventory.frontOnlyPick = true, reject other picks with LAUNCH_REJECTED) and in input (non-front reserve units are not raycast targets).
+2) Reserve shift: when a front unit leaves for a slot, the units behind it in that column move up one cell. Logic shifts instantly (RESERVE_SHIFTED). The renderer animates each unit one by one from front to back, and a unit only starts moving once the cell ahead is free, so meshes never overlap. Add render.reserveShiftMs and render.reserveShiftStaggerMs.
+3) Relaunch parked units: set rules.allowRelaunchParked = true and add a launchFromSlot(slotIndex) command. A parked unit clicked again goes back on the track with its current capacity and keeps its slot (OCCUPIED while moving). If it reaches 0 it dies and frees the slot; if not, it parks again. Emit UNIT_RELAUNCHED.
+Loss must still be possible: redefine LOSE as a deadlock. The grid is not cleared, no unit is moving, no reserve front unit can take a FREE slot, and no parked unit can fire on a full lap (no lane on any side has its color as the first non-empty cell). Keep the "slots_blocked" and "out_of_units" reasons.
+4) Level order: the current level02 becomes the first level. Update ids, names, progression and every test that references them.
+Tests: non-front picks are rejected, the reserve shift is correct, relaunching keeps capacity and slot, a relaunched unit dies at 0 and frees its slot, deadlock triggers LOSE, relaunching a useful parked unit does not trigger LOSE, and the new first level still plays to WIN headless. Keep npm test green and the build clean.
+Update the README v1 values table with the new Config keys. Report your decisions and propose a commit message.
+

@@ -4,7 +4,7 @@ import { captureEvents } from '../helpers/captureEvents.js';
 import { runUntil } from '../helpers/runUntil.js';
 import {
   SINGLE_LANE_LEVEL, TWO_COLORS_LEVEL, CONTENTION_LEVEL, TWO_SINGLES_LEVEL, SHIELDED_LEVEL, PADDED_LEVEL,
-  WALLED_LEVEL, DIE_AND_PARK_LEVEL, STACKED_LEVEL, ALL_BLOCKED_LEVEL, DEAD_END_LEVEL,
+  WALLED_LEVEL, DIE_AND_PARK_LEVEL, STACKED_LEVEL, ALL_BLOCKED_LEVEL,
 } from '../fixtures/levels.js';
 import { GamePhase } from '../../src/core/GameManager.js';
 import { UnitState } from '../../src/core/Unit.js';
@@ -46,7 +46,7 @@ describe('GameManager', () => {
       for (let i = 0; i < 5; i += 1) expect(game.activateUnit(`u${i}`).ok).toBe(true);
       const events = captureEvents(eventBus);
       expect(game.activateUnit('u5')).toEqual({ ok: false, reason: RejectReason.NO_FREE_SLOT });
-      expect(events).toEqual([{ type: Events.MOVE_REJECTED, payload: { unitId: 'u5', reason: RejectReason.NO_FREE_SLOT } }]);
+      expect(events).toEqual([{ type: Events.LAUNCH_REJECTED, payload: { unitId: 'u5', reason: RejectReason.NO_FREE_SLOT } }]);
     });
 
     it('rejects with NOT_IN_RESERVE for units that are active, dead or returned', () => {
@@ -265,23 +265,23 @@ describe('GameManager', () => {
       expect(game.phase).toBe(GamePhase.LOST);
       expect(game.isLost()).toBe(true);
       expect(game.getSnapshot().slots.map((s) => s.status)).toEqual(Array(5).fill('blocked'));
-      expect(events.find((e) => e.type === Events.LEVEL_LOST).payload).toEqual({ reason: LoseReason.ALL_SLOTS_BLOCKED });
+      expect(events.find((e) => e.type === Events.LEVEL_LOST).payload).toEqual({ reason: LoseReason.SLOTS_BLOCKED });
       expect(game.canActivate('u5')).toEqual({ ok: false, reason: RejectReason.NOT_PLAYING });
     });
 
-    it('enters LOST when the reserve is empty, nothing is running and blocks remain', () => {
-      const { game, eventBus } = createTestGame({ level: WALLED_LEVEL });
+    it('enters LOST (out of units) when a slot is free, the reserve is empty and relaunching is off', () => {
+      const { game, eventBus } = createTestGame({ level: WALLED_LEVEL, config: { rules: { allowRelaunchParked: false } } });
       const events = captureEvents(eventBus);
       game.activateUnit('u0'); // slot 0: checks every lane before u1 opens it, so it parks
       game.activateUnit('u1'); // slot 1: eats all 8 blue and dies at step 14
       expect(finish(game)).toBe(16);
       expect(game.phase).toBe(GamePhase.LOST);
       expect(game.getSnapshot().grid.cells).toEqual([[0, 0, 0], [0, 1, 0], [0, 0, 0]]);
-      expect(events.find((e) => e.type === Events.LEVEL_LOST).payload).toEqual({ reason: LoseReason.RESERVE_EMPTY });
+      expect(events.find((e) => e.type === Events.LEVEL_LOST).payload).toEqual({ reason: LoseReason.OUT_OF_UNITS });
     });
 
     it('does NOT lose while a runner is still on the track', () => {
-      const { game } = createTestGame({ level: WALLED_LEVEL });
+      const { game } = createTestGame({ level: WALLED_LEVEL, config: { rules: { allowRelaunchParked: false } } });
       game.activateUnit('u0');
       game.activateUnit('u1');
       game.step(15); // reserve empty and u1 dead, but u0 is still running
@@ -295,8 +295,11 @@ describe('GameManager', () => {
 
     // A balanced level never exhausts a colour while one of its units waits in the reserve, so the blue
     // blocks are removed directly to reach NO_TARGET.
-    it('rejects NO_TARGET and loses with NO_VALID_MOVES when allowNoTargetActivation is off', () => {
-      const { game, eventBus } = createTestGame({ level: DIE_AND_PARK_LEVEL, config: { rules: { allowNoTargetActivation: false } } });
+    it('rejects NO_TARGET, and a reserve unit that cannot take a slot counts toward the deadlock', () => {
+      const { game, eventBus } = createTestGame({
+        level: DIE_AND_PARK_LEVEL,
+        config: { rules: { allowNoTargetActivation: false, allowRelaunchParked: false } },
+      });
       game.activateUnit('u0');
       game.activateUnit('u1');
       game.step(16); // u0 died, u1 parked on the red centre; u2 (blue 7) can still act
@@ -304,29 +307,10 @@ describe('GameManager', () => {
       for (const [r, c] of WALLED_BORDER) game.grid.clearCell(r, c);
       const events = captureEvents(eventBus);
       expect(game.activateUnit('u2')).toEqual({ ok: false, reason: RejectReason.NO_TARGET });
-      expect(events[0]).toEqual({ type: Events.MOVE_REJECTED, payload: { unitId: 'u2', reason: RejectReason.NO_TARGET } });
+      expect(events[0]).toEqual({ type: Events.LAUNCH_REJECTED, payload: { unitId: 'u2', reason: RejectReason.NO_TARGET } });
       game.step();
       expect(game.phase).toBe(GamePhase.LOST);
-      expect(events.find((e) => e.type === Events.LEVEL_LOST).payload).toEqual({ reason: LoseReason.NO_VALID_MOVES });
-    });
-
-    it('uses the Simulator dry run when rules.detectDeadEndsEarly is on', () => {
-      const play = (strict) => {
-        const { game } = createTestGame({ level: DEAD_END_LEVEL, config: { rules: { detectDeadEndsEarly: strict } } });
-        game.activateUnit('u0'); // blue 8, slot 0: never sees an opening, parks at step 24
-        game.activateUnit('u1'); // red 16, slot 1: eats the outer ring, dies at step 22
-        return { game, events: game.step(24) };
-      };
-      const relaxed = play(false).game;
-      expect(relaxed.phase).toBe(GamePhase.PLAYING); // u2 can still be activated, it just cannot eat
-      expect(unit(relaxed, 'u0')).toMatchObject({ state: UnitState.RETURNED, capacity: 8 });
-      expect(unit(relaxed, 'u1').state).toBe(UnitState.DEAD);
-      expect(relaxed.getValidMoves()).toEqual([]);
-
-      const strict = play(true);
-      expect(strict.game.phase).toBe(GamePhase.LOST);
-      expect(strict.game.stepCount).toBe(24);
-      expect(strict.events.find((e) => e.type === Events.LEVEL_LOST).payload).toEqual({ reason: LoseReason.NO_VALID_MOVES });
+      expect(events.find((e) => e.type === Events.LEVEL_LOST).payload).toEqual({ reason: LoseReason.OUT_OF_UNITS });
     });
   });
 

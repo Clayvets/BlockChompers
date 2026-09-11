@@ -12,8 +12,8 @@ export const GamePhase = Object.freeze({ IDLE: 'idle', PLAYING: 'playing', WON: 
  * Orchestrator. The ONLY class that mutates game state in response to time (step) or commands
  * (activateUnit). Emits domain events; exposes a plain snapshot.
  *
- *   commands in : activateUnit, pause, resume, restartLevel, continueToNextLevel -> { ok, reason };
- *                 activateUnit never throws; command events emit at once
+ *   commands in : activateUnit, launchFromSlot, pause, resume, restartLevel, continueToNextLevel -> { ok, reason };
+ *                 the two launch commands never throw; command events emit at once
  *   state out   : getSnapshot() every frame (structure)
  *   events out  : collected during step() and flushed after it (effects)
  *
@@ -171,22 +171,26 @@ export class GameManager {
 
   /**
    * Player command: move a reserve unit into a free active slot; it launches after timing.launchDelay.
-   * Never throws; a rejection emits MOVE_REJECTED with a RejectReason.
+   * Never throws; a rejection emits LAUNCH_REJECTED with a RejectReason. The units behind it in its reserve column
+   * move up one cell (RESERVE_SHIFTED).
    * @returns {{ ok: boolean, slotIndex?: number, reason?: string }}
    */
   activateUnit(unitId) {
     const check = this.canActivate(unitId);
     if (!check.ok) {
-      this.#emit(Events.MOVE_REJECTED, { unitId, reason: check.reason });
+      this.#emit(Events.LAUNCH_REJECTED, { unitId, reason: check.reason });
       return check;
     }
     const result = this.inventory.activate(unitId);
     if (!result.ok) {
-      this.#emit(Events.MOVE_REJECTED, { unitId, reason: result.reason });
+      this.#emit(Events.LAUNCH_REJECTED, { unitId, reason: result.reason });
       return { ok: false, reason: result.reason };
     }
     this.inventory.getUnit(unitId).timer = this.#launchSteps;
     this.#emit(Events.UNIT_ACTIVATED, { unitId, slotIndex: result.slotIndex });
+    if (result.shifted.length > 0) {
+      this.#emit(Events.RESERVE_SHIFTED, { column: result.shifted[0].from.col, moves: result.shifted });
+    }
     return { ok: true, slotIndex: result.slotIndex };
   }
 
@@ -196,13 +200,50 @@ export class GameManager {
     if (this.paused) return { ok: false, reason: RejectReason.PAUSED };
     const unit = this.inventory.getUnit(unitId);
     if (!unit) return { ok: false, reason: RejectReason.UNKNOWN_UNIT };
-    if (unit.state !== UnitState.RESERVE) return { ok: false, reason: RejectReason.NOT_IN_RESERVE };
-    if (!this.inventory.hasFreeSlot()) return { ok: false, reason: RejectReason.NO_FREE_SLOT };
-    if (!this.config.rules.allowNoTargetActivation && this.grid.countRemaining(unit.color) === 0) {
-      return { ok: false, reason: RejectReason.NO_TARGET };
+    const reason = this.#activationBlocker(unit);
+    return reason ? { ok: false, reason } : { ok: true };
+  }
+
+  /** Why `unit` cannot take a slot right now, ignoring phase and pause; null when it can. */
+  #activationBlocker(unit) {
+    if (unit.state !== UnitState.RESERVE) return RejectReason.NOT_IN_RESERVE;
+    if (this.config.inventory.frontOnlyPick && !this.inventory.isFront(unit.id)) return RejectReason.NOT_FRONT;
+    if (!this.inventory.hasFreeSlot()) return RejectReason.NO_FREE_SLOT;
+    if (!this.config.rules.allowNoTargetActivation && this.grid.countRemaining(unit.color) === 0) return RejectReason.NO_TARGET;
+    return null;
+  }
+
+  /**
+   * Player command: send the unit parked in `slotIndex` back on the track (rules.allowRelaunchParked). It keeps its
+   * capacity and its slot (OCCUPIED while it moves), launches after timing.launchDelay like a fresh activation, dies
+   * and frees the slot at capacity 0, or parks in the same slot again after the lap. Never throws; a rejection emits
+   * LAUNCH_REJECTED.
+   * @returns {{ ok: boolean, unitId?: string, reason?: string }}
+   */
+  launchFromSlot(slotIndex) {
+    const check = this.canLaunchFromSlot(slotIndex);
+    if (!check.ok) {
+      this.#emit(Events.LAUNCH_REJECTED, { slotIndex, reason: check.reason });
+      return check;
     }
+    const { unitId } = this.inventory.relaunch(slotIndex);
+    const unit = this.inventory.getUnit(unitId);
+    unit.timer = this.#launchSteps;
+    this.#emit(Events.UNIT_RELAUNCHED, { unitId, slotIndex, capacity: unit.capacity });
+    return { ok: true, unitId };
+  }
+
+  /** Same checks as launchFromSlot without side effects. */
+  canLaunchFromSlot(slotIndex) {
+    if (this.phase !== GamePhase.PLAYING) return { ok: false, reason: RejectReason.NOT_PLAYING };
+    if (this.paused) return { ok: false, reason: RejectReason.PAUSED };
+    if (!this.config.rules.allowRelaunchParked) return { ok: false, reason: RejectReason.RELAUNCH_DISABLED };
+    const slot = this.inventory.getSlots()[slotIndex];
+    if (!slot) return { ok: false, reason: RejectReason.UNKNOWN_SLOT };
+    if (slot.status !== 'blocked') return { ok: false, reason: RejectReason.NOT_PARKED };
     return { ok: true };
   }
+
 
   /**
    * Freeze the simulation (settings panel). update() and step() do nothing and activateUnit is rejected
@@ -280,18 +321,22 @@ export class GameManager {
     return !this.config.rules.winWaitsForRunners || this.inventory.getRunners().length === 0;
   }
 
-  /** no runners && blocks remain && (all slots blocked | reserve empty | nothing activatable | early dead end) */
+  /**
+   * Deadlock: blocks remain, no unit is moving, no reserve unit can take a free slot, and no parked unit could eat
+   * on a full lap (its colour is first on no lane; only counted when rules.allowRelaunchParked is on).
+   */
   isLost() {
     return this.#loseReason() !== null;
   }
 
   #loseReason() {
     if (!this.track || this.grid.isCleared() || this.inventory.getRunners().length > 0) return null;
-    if (!this.inventory.hasFreeSlot()) return LoseReason.ALL_SLOTS_BLOCKED;
-    if (!this.inventory.hasReserve()) return LoseReason.RESERVE_EMPTY;
-    if (!this.inventory.getReserve().some((unit) => this.canActivate(unit.id).ok)) return LoseReason.NO_VALID_MOVES;
-    if (this.config.rules.detectDeadEndsEarly && this.getValidMoves().length === 0) return LoseReason.NO_VALID_MOVES;
-    return null;
+    if (this.inventory.getReserve().some((unit) => this.#activationBlocker(unit) === null)) return null;
+    if (this.config.rules.allowRelaunchParked) {
+      const exposed = new Set(this.grid.exposedColors());
+      if (this.inventory.getParked().some((unit) => exposed.has(unit.color))) return null;
+    }
+    return this.inventory.hasFreeSlot() ? LoseReason.OUT_OF_UNITS : LoseReason.SLOTS_BLOCKED;
   }
 
   /**

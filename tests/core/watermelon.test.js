@@ -35,7 +35,8 @@ describe('level: watermelon', () => {
   });
 
   it('keeps presentation out of the core level file', () => {
-    expect(Object.keys(watermelon).sort()).toEqual(['grid', 'id', 'units']);
+    expect(Object.keys(watermelon).sort()).toEqual(['grid', 'id', 'name', 'units']);
+    expect(watermelon.name).toBe('Watermelon');
     expect(Config.render.levels.watermelon.background).toBe(0xc5ecfb);
   });
 
@@ -64,8 +65,8 @@ describe('level: watermelon', () => {
     expect(game.getSnapshot().grid.remaining).toBe(0);
   });
 
-  it('is the second level of the progression', async () => {
+  it('is the first level of the progression', async () => {
     const { levels } = await import('../../src/core/levels/index.js');
-    expect(levels.map((l) => l.id)).toEqual(['level-01', 'watermelon']);
+    expect(levels.map((l) => l.id)).toEqual(['watermelon', 'starter']);
   });
 });

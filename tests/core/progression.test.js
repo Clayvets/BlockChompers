@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { createTestGame } from '../helpers/createTestGame.js';
 import { captureEvents } from '../helpers/captureEvents.js';
 import { runUntil } from '../helpers/runUntil.js';
-import { SINGLE_LANE_LEVEL, TWO_SINGLES_LEVEL, WALLED_LEVEL } from '../fixtures/levels.js';
+import { SINGLE_LANE_LEVEL, TWO_SINGLES_LEVEL, ALL_BLOCKED_LEVEL } from '../fixtures/levels.js';
 import { GamePhase } from '../../src/core/GameManager.js';
 import { UnitState } from '../../src/core/Unit.js';
 import { Events, RejectReason } from '../../src/core/Events.js';
@@ -12,7 +12,7 @@ const REWARD = Config.progression.rewardPerLevel;
 const START = Config.progression.startingMoney;
 const types = (events) => events.map((e) => e.type);
 const finish = (game) => runUntil(game, (g) => g.phase !== GamePhase.PLAYING, 100);
-/** Activates every reserve unit in order and plays to the end: wins SINGLE_LANE / TWO_SINGLES, loses WALLED. */
+/** Activates every reserve unit in order and plays to the end: wins SINGLE_LANE / TWO_SINGLES, deadlocks ALL_BLOCKED. */
 const playOut = (game) => {
   for (const unit of game.getSnapshot().units) game.activateUnit(unit.id);
   finish(game);
@@ -59,14 +59,14 @@ describe('money and progression through GameManager commands', () => {
   });
 
   it('Retry after a loss pays nothing and replays the same level', () => {
-    const { game } = createTestGame({ levels: [WALLED_LEVEL, SINGLE_LANE_LEVEL] });
+    const { game } = createTestGame({ levels: [ALL_BLOCKED_LEVEL, SINGLE_LANE_LEVEL] });
     expect(playOut(game)).toBe(GamePhase.LOST);
     expect(game.continueToNextLevel()).toEqual({ ok: false, reason: RejectReason.NOT_WON });
     expect(game.restartLevel()).toEqual({ ok: true });
     const snapshot = game.getSnapshot();
     expect(snapshot.phase).toBe(GamePhase.PLAYING);
-    expect(snapshot.progress).toMatchObject({ levelNumber: 1, levelId: WALLED_LEVEL.id, money: START });
-    expect(snapshot.grid.cells).toEqual(WALLED_LEVEL.grid);
+    expect(snapshot.progress).toMatchObject({ levelNumber: 1, levelId: ALL_BLOCKED_LEVEL.id, money: START });
+    expect(snapshot.grid.cells).toEqual(ALL_BLOCKED_LEVEL.grid);
     expect(snapshot.units.every((u) => u.state === UnitState.RESERVE)).toBe(true);
   });
 
@@ -128,7 +128,7 @@ describe('pause (settings panel)', () => {
     expect(game.activateUnit('u1')).toEqual({ ok: true, slotIndex: 0 });
     expect(finish(game)).toBe(1);
     expect(game.phase).toBe(GamePhase.WON);
-    expect(types(events).slice(0, 3)).toEqual([Events.GAME_PAUSED, Events.MOVE_REJECTED, Events.GAME_RESUMED]);
+    expect(types(events).slice(0, 3)).toEqual([Events.GAME_PAUSED, Events.LAUNCH_REJECTED, Events.GAME_RESUMED]);
   });
 
   it('pause and resume are idempotent, and pause is refused once the level is over', () => {

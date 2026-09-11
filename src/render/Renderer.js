@@ -6,7 +6,6 @@ import { UnitState } from '../core/Unit.js';
 /** facing -> heading on the cell plane (x right, y down). */
 const HEADING = Object.freeze({ N: [0, -1], E: [1, 0], S: [0, 1], W: [-1, 0] });
 const IN_SLOT = new Set([UnitState.ACTIVE, UnitState.RETURNED]);
-const PICKABLE_KINDS = new Set(['unit', 'slot']);
 
 /**
  * The Three.js bridge. Reads snapshots, owns the scene graph, never mutates game state.
@@ -38,6 +37,9 @@ export class Renderer {
   #style = null;
   #layout = null;
   #pickables = [];
+  /** Reserve shift animation state per unit id: { col, y (drawn row), target, startAt }. */
+  #reserveAnim = new Map();
+  #animClock = null;
   #size = { width: 1, height: 1 };
   /** Screen pixels covered by DOM chrome (HUD bar); fitCamera keeps the board out of them. */
   #insets = { top: 0, bottom: 0 };
@@ -224,7 +226,7 @@ export class Renderer {
       this.buildInventory(snapshot);
       this.#inventoryVersion = snapshot.inventory.version;
     }
-    this.#syncUnits(snapshot.units);
+    this.#syncUnits(snapshot);
   }
 
   #signatureOf({ levelId, grid, track, slots, inventory }) {
@@ -260,7 +262,6 @@ export class Renderer {
       this.cellToWorld(x, y, 0, mesh.position);
       this.#levelRoot.add(mesh);
       this.#slotMeshes.push(mesh);
-      this.#pickables.push(mesh);
     }
     const { reserveCols, reserveRows } = snapshot.inventory;
     for (let row = 0; row < reserveRows; row += 1) {
@@ -274,8 +275,14 @@ export class Renderer {
     this.fitCamera();
   }
 
-  #syncUnits(units) {
+  #syncUnits({ units, slots }) {
     const { unitHeight, label } = this.config.render;
+    const now = performance.now();
+    const dt = this.#animClock === null ? 0 : now - this.#animClock;
+    this.#animClock = now;
+    this.#animateReserve(units, now, dt);
+    const frontOnly = this.config.inventory.frontOnlyPick;
+    const pickables = slots.filter((s) => s.status === 'blocked').map((s) => this.#slotMeshes[s.index]).filter(Boolean);
     const alive = new Set();
     for (const unit of units) {
       if (unit.state === UnitState.DEAD) continue;
@@ -294,9 +301,10 @@ export class Renderer {
         group.userData.label = sprite;
         this.#levelRoot.add(group);
         this.#unitMeshes.set(unit.id, group);
-        this.#pickables.push(group);
       }
       this.factory.setLabel(group.userData.label, String(unit.capacity));
+      group.userData.pickAs = this.#pickTarget(unit, frontOnly);
+      if (group.userData.pickAs) pickables.push(group);
       const { x, y, facing } = this.#unitCellPose(unit);
       const [dx, dy] = HEADING[facing];
       this.cellToWorld(x, y, unitHeight / 2, group.position);
@@ -304,6 +312,56 @@ export class Renderer {
     }
     for (const [id, group] of this.#unitMeshes) {
       if (!alive.has(id)) this.#removeUnit(id, group);
+    }
+    this.#pickables = pickables;
+  }
+
+  /** Raycast target for a unit: front reserve units launch, parked units relaunch from their slot, others none. */
+  #pickTarget(unit, frontOnly) {
+    if (unit.state === UnitState.RESERVE && (!frontOnly || unit.reservePos.row === 0)) return { kind: 'unit', id: unit.id };
+    if (unit.state === UnitState.RETURNED && unit.slotIndex !== null) return { kind: 'slot', id: unit.slotIndex };
+    return null;
+  }
+
+  /**
+   * Reserve shift animation (presentation only: the logic already moved the units). Per column, front to back, a
+   * unit whose row moved up starts render.reserveShiftStaggerMs after the unit ahead, glides one row per
+   * render.reserveShiftMs, and is never drawn closer than one row to the unit ahead, so meshes never overlap.
+   * A unit whose row moved back (level restart) snaps.
+   */
+  #animateReserve(units, now, dt) {
+    const { reserveShiftMs, reserveShiftStaggerMs } = this.config.render;
+    const columns = new Map();
+    const inReserve = new Set();
+    for (const unit of units) {
+      if (unit.state !== UnitState.RESERVE) continue;
+      inReserve.add(unit.id);
+      const { col, row } = unit.reservePos;
+      let entry = this.#reserveAnim.get(unit.id);
+      if (!entry || entry.col !== col || row > entry.target) {
+        entry = { col, y: row, target: row, startAt: now };
+        this.#reserveAnim.set(unit.id, entry);
+      } else if (row < entry.target) {
+        entry.target = row;
+        entry.startAt = null;
+      }
+      if (!columns.has(col)) columns.set(col, []);
+      columns.get(col).push(entry);
+    }
+    for (const id of this.#reserveAnim.keys()) if (!inReserve.has(id)) this.#reserveAnim.delete(id);
+    for (const column of columns.values()) {
+      column.sort((a, b) => a.target - b.target);
+      let leaderStart = -Infinity;
+      let leaderY = -Infinity;
+      for (const entry of column) {
+        if (entry.startAt === null) entry.startAt = Math.max(now, leaderStart + reserveShiftStaggerMs);
+        if (entry.y > entry.target) {
+          leaderStart = entry.startAt;
+          if (now >= entry.startAt) entry.y = Math.max(entry.target, entry.y - dt / reserveShiftMs);
+        }
+        entry.y = Math.max(entry.y, leaderY + 1);
+        leaderY = entry.y;
+      }
     }
   }
 
@@ -315,7 +373,9 @@ export class Renderer {
       return { x: x + outward.dx * offset, y: y + outward.dy * offset, facing };
     }
     if (IN_SLOT.has(unit.state) && unit.slotIndex !== null) return { ...this.#layout.slotPos(unit.slotIndex), facing: 'N' };
-    return { ...this.#layout.reservePos(unit.reservePos), facing: 'N' };
+    const anim = this.#reserveAnim.get(unit.id);
+    const row = anim ? anim.y : unit.reservePos.row;
+    return { ...this.#layout.reservePos({ col: unit.reservePos.col, row }), facing: 'N' };
   }
 
   #removeUnit(id, group) {
@@ -349,7 +409,8 @@ export class Renderer {
   }
 
   /**
-   * Raycast units and slots from normalised device coords.
+   * Raycast the current targets: { kind: 'unit', id } for a pickable reserve unit, { kind: 'slot', id: slotIndex }
+   * for a parked unit or its blocked slot.
    * @returns {{ kind: 'unit'|'slot', id: string|number } | null}
    */
   pick(ndcX, ndcY) {
@@ -357,8 +418,9 @@ export class Renderer {
     this._raycaster.setFromCamera(this._ndc.set(ndcX, ndcY), this.camera);
     for (const hit of this._raycaster.intersectObjects(this.#pickables, true)) {
       for (let object = hit.object; object; object = object.parent) {
-        const { kind, id } = object.userData || {};
-        if (PICKABLE_KINDS.has(kind)) return { kind, id };
+        const data = object.userData || {};
+        const target = data.pickAs || (data.kind === 'slot' ? { kind: 'slot', id: data.id } : null);
+        if (target) return target;
       }
     }
     return null;
@@ -384,6 +446,8 @@ export class Renderer {
     this.#unitMeshes.clear();
     this.#slotMeshes = [];
     this.#pickables = [];
+    this.#reserveAnim.clear();
+    this.#animClock = null;
     this.#trackGroup = null;
     this.#layout = null;
     this.#signature = null;
